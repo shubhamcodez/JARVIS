@@ -1,0 +1,53 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "JARVIS Calculator",
+  "version": "0.1.0",
+  "identifier": "com.jarvis.calculator",
+  "build": {
+    "beforeDevCommand": "npx -y serve frontend -p 1430",
+    "devUrl": "http://localhost:1430",
+    "beforeBuildCommand": "",
+    "frontendDist": "../frontend"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "title": "JARVIS Calculator",
+        "width": 320,
+        "height": 460,
+        "resizable": true,
+        "minWidth": 280,
+        "minHeight": 400
+      }
+    ],
+    "security": {
+      "assetProtocol": {
+        "enable": true,
+        "scope": ["**"]
+      }
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": ["icons/icon.ico"],
+    "windows": {
+      "certificateThumbprint": null,
+      "digestAlgorithm": "sha256",
+      "timestampUrl": ""
+    },
+    "longDescription": "A simple desktop calculator built with Tauri.",
+    "shortDescription": "JARVIS Calculator",
+    "macOS": {
+      "entitlements": null,
+      "exceptionDomain": "",
+      "frameworks": [],
+      "providerShortName": null,
+      "signingIdentity": null
+    },
+    "externalBin": [],
+    "copyright": "",
+    "category": "Utility"
+  }
+}

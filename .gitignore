@@ -1,0 +1,34 @@
+# Dependencies
+node_modules/
+
+# Rust / Cargo
+src-tauri/target/
+
+# Build output
+dist/
+*.exe
+*.dmg
+*.AppImage
+*.deb
+*.rpm
+*.msi
+
+# Logs and caches
+*.log
+npm-debug.log*
+.npm
+.cargo/registry/
+.cargo/git/
+
+# IDE and OS
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Env and secrets
+.env
+.env.local
+*.pem

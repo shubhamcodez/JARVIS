@@ -1,0 +1,13 @@
+[package]
+name = "jarvis-calculator"
+version = "0.1.0"
+description = "JARVIS Calculator - a Tauri desktop app"
+authors = ["you"]
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["protocol-asset"] }
+tauri-plugin-shell = "2"
