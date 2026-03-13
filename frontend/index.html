@@ -3,40 +3,17 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>JARVIS Calculator</title>
+  <title>JARVIS</title>
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <div class="calculator">
-    <div class="display">
-      <div class="display-value" id="display">0</div>
-    </div>
-    <div class="buttons">
-      <button type="button" class="btn btn-clear" data-action="clear">C</button>
-      <button type="button" class="btn btn-op" data-action="op" data-op="%">%</button>
-      <button type="button" class="btn btn-op" data-action="op" data-op="/">/</button>
-      <button type="button" class="btn btn-op" data-action="op" data-op="*">×</button>
-
-      <button type="button" class="btn btn-num" data-num="7">7</button>
-      <button type="button" class="btn btn-num" data-num="8">8</button>
-      <button type="button" class="btn btn-num" data-num="9">9</button>
-      <button type="button" class="btn btn-op" data-action="op" data-op="-">−</button>
-
-      <button type="button" class="btn btn-num" data-num="4">4</button>
-      <button type="button" class="btn btn-num" data-num="5">5</button>
-      <button type="button" class="btn btn-num" data-num="6">6</button>
-      <button type="button" class="btn btn-op" data-action="op" data-op="+">+</button>
-
-      <button type="button" class="btn btn-num" data-num="1">1</button>
-      <button type="button" class="btn btn-num" data-num="2">2</button>
-      <button type="button" class="btn btn-num" data-num="3">3</button>
-      <button type="button" class="btn btn-equals" data-action="equals" rowspan="2">=</button>
-
-      <button type="button" class="btn btn-num btn-zero" data-num="0">0</button>
-      <button type="button" class="btn btn-num" data-action="decimal">.</button>
-      <button type="button" class="btn btn-back" data-action="back">⌫</button>
+  <div class="chat-container">
+    <div class="chat-messages" id="chat-messages"></div>
+    <div class="chat-input-row">
+      <textarea id="chat-input" placeholder="Message JARVIS..." rows="1"></textarea>
+      <button type="button" id="chat-send" aria-label="Send">Send</button>
     </div>
   </div>
-  <script src="calculator.js"></script>
+  <script src="chatbot.js"></script>
 </body>
 </html>

@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "JARVIS Calculator",
+  "productName": "JARVIS",
   "version": "0.1.0",
-  "identifier": "com.jarvis.calculator",
+  "identifier": "com.jarvis.chatbot",
   "build": {
     "beforeDevCommand": "npx -y serve frontend -p 1430",
     "devUrl": "http://localhost:1430",
@@ -13,12 +13,13 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "JARVIS Calculator",
-        "width": 320,
-        "height": 460,
+        "title": "JARVIS",
+        "fullscreen": true,
+        "width": 1280,
+        "height": 720,
         "resizable": true,
-        "minWidth": 280,
-        "minHeight": 400
+        "minWidth": 400,
+        "minHeight": 300
       }
     ],
     "security": {
@@ -37,8 +38,8 @@
       "digestAlgorithm": "sha256",
       "timestampUrl": ""
     },
-    "longDescription": "A simple desktop calculator built with Tauri.",
-    "shortDescription": "JARVIS Calculator",
+    "longDescription": "JARVIS desktop chatbot powered by OpenAI.",
+    "shortDescription": "JARVIS Chatbot",
     "macOS": {
       "entitlements": null,
       "exceptionDomain": "",
