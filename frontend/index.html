@@ -38,9 +38,13 @@
     </aside>
     <div class="chat-container">
     <div class="chat-messages" id="chat-messages"></div>
-    <div class="chat-input-row">
-      <textarea id="chat-input" placeholder="Message JARVIS..." rows="1"></textarea>
-      <button type="button" id="chat-send" aria-label="Send">Send</button>
+    <div class="chat-input-area">
+      <div class="chat-attachments" id="chat-attachments" hidden></div>
+      <div class="chat-input-row">
+        <button type="button" id="chat-attach" class="chat-attach-btn" aria-label="Attach files">📎</button>
+        <textarea id="chat-input" placeholder="Message JARVIS..." rows="1"></textarea>
+        <button type="button" id="chat-send" aria-label="Send">Send</button>
+      </div>
     </div>
     </div>
   </div>

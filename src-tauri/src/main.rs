@@ -1,35 +1,12 @@
 // Prevents additional console window on Windows in release
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod openai;
+
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::sync::Mutex;
-
-use reqwest::Client;
-use serde::{Deserialize, Serialize};
-
-#[derive(Debug, Serialize)]
-struct ChatRequest {
-    model: String,
-    messages: Vec<ChatMessage>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct ChatMessage {
-    role: String,
-    content: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct ChatResponse {
-    choices: Vec<ChatChoice>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ChatChoice {
-    message: ChatMessage,
-}
 
 /// Load .env from current dir, parent, or next to the executable.
 fn load_env() {
@@ -171,49 +148,37 @@ fn list_chats() -> Result<Vec<ChatEntry>, String> {
 }
 
 #[tauri::command]
-async fn chatbot_response(message: String) -> Result<String, String> {
+async fn open_file_picker(app: tauri::AppHandle) -> Result<Vec<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    let paths = tauri::async_runtime::spawn_blocking(move || {
+        app.dialog().file().blocking_pick_files()
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .unwrap_or_default();
+    let strings: Vec<String> = paths
+        .into_iter()
+        .map(|p| p.to_string())
+        .collect();
+    Ok(strings)
+}
+
+#[tauri::command]
+async fn chatbot_response(
+    message: String,
+    attachment_paths: Option<Vec<String>>,
+) -> Result<String, String> {
     load_env();
     let api_key = std::env::var("OPENAI_API_KEY")
         .map_err(|_| "OPENAI_API_KEY not set. Add it to a .env file in the project root.")?;
-
-    let client = Client::new();
-    let body = ChatRequest {
-        model: "gpt-4o-mini".to_string(),
-        messages: vec![ChatMessage {
-            role: "user".to_string(),
-            content: message,
-        }],
-    };
-
-    let res = client
-        .post("https://api.openai.com/v1/chat/completions")
-        .bearer_auth(api_key)
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
-
-    if !res.status().is_success() {
-        let status = res.status();
-        let text = res.text().await.unwrap_or_default();
-        return Err(format!("API error {}: {}", status, text));
-    }
-
-    let chat: ChatResponse = res.json().await.map_err(|e| e.to_string())?;
-    let reply = chat
-        .choices
-        .into_iter()
-        .next()
-        .map(|c| c.message.content)
-        .unwrap_or_else(|| "No response.".to_string());
-
-    Ok(reply)
+    openai::chat(&api_key, message, attachment_paths).await
 }
 
 fn main() {
     load_env();
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
         .manage(ChatLogState::default())
         .invoke_handler(tauri::generate_handler![
@@ -223,7 +188,9 @@ fn main() {
             window_toggle_maximize,
             append_chat_log,
             list_chats,
+            open_file_picker,
         ])
+        .plugin(tauri_plugin_dialog::init())
         .run(tauri::generate_context!())
         .expect("error while running Tauri application");
 }

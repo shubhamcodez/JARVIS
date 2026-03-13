@@ -9,7 +9,7 @@ html, body {
   width: 100%;
   overflow: hidden;
   font-family: "Segoe UI", system-ui, sans-serif;
-  background: #0d1117;
+  background: #0a0a0a;
   color: #e6edf3;
   display: flex;
   flex-direction: column;
@@ -21,8 +21,8 @@ html, body {
   justify-content: space-between;
   height: 36px;
   padding: 0 0.5rem 0 1rem;
-  background: #161b22;
-  border-bottom: 1px solid #30363d;
+  background: #0a0a0a;
+  border-bottom: 1px solid #1a1a1a;
   flex-shrink: 0;
   -webkit-app-region: drag;
   app-region: drag;
@@ -45,7 +45,7 @@ html, body {
 .titlebar-title {
   font-size: 0.8125rem;
   font-weight: 600;
-  color: #8b949e;
+  color: #737373;
 }
 
 .titlebar-controls {
@@ -70,7 +70,7 @@ html, body {
 }
 
 .titlebar-btn:hover {
-  background: #21262d;
+  background: #141414;
   color: #fff;
 }
 
@@ -93,8 +93,8 @@ html, body {
 .sidebar {
   width: 260px;
   flex-shrink: 0;
-  background: #161b22;
-  border-right: 1px solid #30363d;
+  background: #0a0a0a;
+  border-right: 1px solid #1a1a1a;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -103,7 +103,7 @@ html, body {
 .sidebar-tabs {
   display: flex;
   flex-shrink: 0;
-  border-bottom: 1px solid #30363d;
+  border-bottom: 1px solid #1a1a1a;
   padding: 0 0.5rem;
   gap: 0.25rem;
 }
@@ -113,7 +113,7 @@ html, body {
   padding: 0.625rem 0.75rem;
   border: none;
   background: transparent;
-  color: #8b949e;
+  color: #737373;
   font-size: 0.8125rem;
   font-weight: 500;
   cursor: pointer;
@@ -174,14 +174,14 @@ html, body {
 }
 
 .chat-history-item:hover {
-  background: #21262d;
+  background: #141414;
 }
 
 .chat-history-item .chat-history-icon {
   flex-shrink: 0;
   width: 18px;
   height: 18px;
-  color: #8b949e;
+  color: #737373;
 }
 
 .chat-history-item .chat-history-title {
@@ -195,7 +195,7 @@ html, body {
 .chat-history-empty {
   padding: 1.5rem 1rem;
   font-size: 0.8125rem;
-  color: #8b949e;
+  color: #737373;
   text-align: center;
   line-height: 1.5;
 }
@@ -206,7 +206,7 @@ html, body {
 
 .activity-empty {
   font-size: 0.8125rem;
-  color: #8b949e;
+  color: #737373;
   margin: 0;
   line-height: 1.5;
 }
@@ -215,7 +215,7 @@ html, body {
   font-size: 0.8125rem;
   color: #e6edf3;
   padding: 0.5rem 0;
-  border-bottom: 1px solid #21262d;
+  border-bottom: 1px solid #1a1a1a;
   line-height: 1.4;
 }
 
@@ -225,7 +225,7 @@ html, body {
 
 .activity-item-time {
   font-size: 0.6875rem;
-  color: #8b949e;
+  color: #737373;
   margin-top: 0.25rem;
 }
 
@@ -262,20 +262,94 @@ html, body {
 
 .msg-bot {
   align-self: flex-start;
-  background: #21262d;
-  border: 1px solid #30363d;
+  background: #141414;
+  border: 1px solid #1a1a1a;
 }
 
 .msg-text {
   white-space: pre-wrap;
 }
 
+.chat-input-area {
+  border-top: 1px solid #1a1a1a;
+  background: #0a0a0a;
+}
+
+.chat-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  padding: 0.5rem 2rem 0 2rem;
+}
+
+.chat-attachment {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.35rem 0.5rem;
+  background: #141414;
+  border: 1px solid #1a1a1a;
+  border-radius: 6px;
+  font-size: 0.8125rem;
+  color: #e6edf3;
+  max-width: 200px;
+}
+
+.chat-attachment-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-attachment-remove {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: #737373;
+  cursor: pointer;
+  border-radius: 4px;
+  font-size: 1rem;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.chat-attachment-remove:hover {
+  color: #e6edf3;
+  background: #1a1a1a;
+}
+
 .chat-input-row {
   display: flex;
   gap: 0.75rem;
   padding: 1rem 2rem 1.5rem;
-  background: #161b22;
-  border-top: 1px solid #30363d;
+  align-items: flex-end;
+}
+
+.chat-attach-btn {
+  flex-shrink: 0;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: #737373;
+  cursor: pointer;
+  border-radius: 8px;
+  font-size: 1.25rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.chat-attach-btn:hover {
+  background: #141414;
+  color: #e6edf3;
 }
 
 #chat-input {
@@ -283,16 +357,16 @@ html, body {
   min-height: 44px;
   max-height: 160px;
   padding: 0.75rem 1rem;
-  border: 1px solid #30363d;
+  border: 1px solid #1a1a1a;
   border-radius: 8px;
-  background: #0d1117;
+  background: #0a0a0a;
   color: #e6edf3;
   font: inherit;
   resize: none;
 }
 
 #chat-input::placeholder {
-  color: #8b949e;
+  color: #737373;
 }
 
 #chat-input:focus {
