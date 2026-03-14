@@ -23,6 +23,7 @@
       <div class="sidebar-tabs" role="tablist">
         <button type="button" class="sidebar-tab active" role="tab" id="tab-chats" aria-selected="true" aria-controls="panel-chats">Chats</button>
         <button type="button" class="sidebar-tab" role="tab" id="tab-activity" aria-selected="false" aria-controls="panel-activity">Activity</button>
+        <button type="button" class="sidebar-tab" role="tab" id="tab-settings" aria-selected="false" aria-controls="panel-settings">Settings</button>
       </div>
       <div class="sidebar-panel active" id="panel-chats" role="tabpanel" aria-labelledby="tab-chats">
         <div class="sidebar-list chat-history-list" id="chat-history-list">
@@ -33,6 +34,18 @@
         <div class="sidebar-list activity-list" id="activity-list">
           <p class="activity-empty" id="activity-empty">No actions yet. Actions the chatbot takes will appear here.</p>
           <!-- Activity items can be appended here later -->
+        </div>
+      </div>
+      <div class="sidebar-panel" id="panel-settings" role="tabpanel" aria-labelledby="tab-settings" hidden>
+        <div class="sidebar-list settings-panel" id="settings-panel">
+          <div class="settings-section">
+            <label class="settings-label" for="settings-storage-path">Storage location</label>
+            <p class="settings-description">Where chat logs are saved.</p>
+            <div class="settings-storage-row">
+              <input type="text" id="settings-storage-path" class="settings-storage-input" readonly aria-label="Chats storage path" />
+              <button type="button" id="settings-storage-change" class="settings-storage-btn">Change</button>
+            </div>
+          </div>
         </div>
       </div>
     </aside>

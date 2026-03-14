@@ -12,21 +12,27 @@ document.getElementById("titlebar-minimize").addEventListener("click", () => inv
 document.getElementById("titlebar-close").addEventListener("click", () => invoke("window_close"));
 document.getElementById("titlebar-maximize").addEventListener("click", () => invoke("window_toggle_maximize"));
 
-// Sidebar tabs: Chats | Activity
+// Sidebar tabs: Chats | Activity | Settings
 const tabChats = document.getElementById("tab-chats");
 const tabActivity = document.getElementById("tab-activity");
+const tabSettings = document.getElementById("tab-settings");
 const panelChats = document.getElementById("panel-chats");
 const panelActivity = document.getElementById("panel-activity");
+const panelSettings = document.getElementById("panel-settings");
 
 function showPanel(panel) {
   panelChats.classList.toggle("active", panel === "chats");
   panelActivity.classList.toggle("active", panel === "activity");
+  panelSettings.classList.toggle("active", panel === "settings");
   panelChats.hidden = panel !== "chats";
   panelActivity.hidden = panel !== "activity";
+  panelSettings.hidden = panel !== "settings";
   tabChats.classList.toggle("active", panel === "chats");
   tabActivity.classList.toggle("active", panel === "activity");
+  tabSettings.classList.toggle("active", panel === "settings");
   tabChats.setAttribute("aria-selected", panel === "chats");
   tabActivity.setAttribute("aria-selected", panel === "activity");
+  tabSettings.setAttribute("aria-selected", panel === "settings");
 }
 
 tabChats.addEventListener("click", () => {
@@ -35,6 +41,37 @@ tabChats.addEventListener("click", () => {
 });
 
 tabActivity.addEventListener("click", () => showPanel("activity"));
+tabSettings.addEventListener("click", () => {
+  showPanel("settings");
+  refreshSettingsStoragePath();
+});
+
+// Settings: storage location
+const settingsStoragePathInput = document.getElementById("settings-storage-path");
+const settingsStorageChangeBtn = document.getElementById("settings-storage-change");
+
+async function refreshSettingsStoragePath() {
+  try {
+    const path = await invoke("get_chats_storage_path");
+    settingsStoragePathInput.value = path || "";
+  } catch (_) {
+    settingsStoragePathInput.value = "";
+  }
+}
+
+settingsStorageChangeBtn.addEventListener("click", async () => {
+  try {
+    const selected = await invoke("open_folder_picker");
+    if (selected != null && selected !== "") {
+      await invoke("set_chats_storage_path", { path: selected });
+      settingsStoragePathInput.value = selected;
+      refreshChatHistory();
+    }
+  } catch (err) {
+    const msg = (err && (err.message || err)) || "Could not change storage location.";
+    console.error(msg);
+  }
+});
 
 // Chat history: list from backend, ChatGPT-style titles
 const chatHistoryList = document.getElementById("chat-history-list");
@@ -130,7 +167,11 @@ async function sendMessage() {
   const pathsToSend = attachmentPaths.slice();
   attachmentPaths = [];
   renderAttachments();
-  const displayText = raw || "(attached documents)";
+  const displayText = raw || (pathsToSend.length
+    ? (pathsToSend.length === 1
+      ? `${basename(pathsToSend[0])} has been read`
+      : `${pathsToSend.map(basename).join(", ")} have been read`)
+    : "");
   appendMessage(displayText, true);
   chatSend.disabled = true;
 
