@@ -263,3 +263,43 @@ async fn chat_completion_only(
 
     Ok(reply)
 }
+
+/// Chat with a system prompt (e.g. for planning). Returns assistant reply.
+pub async fn chat_with_system(
+    api_key: &str,
+    system_prompt: &str,
+    user_message: &str,
+) -> Result<String, String> {
+    let client = Client::new();
+    let body = ChatRequest {
+        model: "gpt-4o-mini".to_string(),
+        messages: vec![
+            ChatMessageRequest {
+                role: "system".to_string(),
+                content: JsonValue::String(system_prompt.to_string()),
+            },
+            ChatMessageRequest {
+                role: "user".to_string(),
+                content: JsonValue::String(user_message.to_string()),
+            },
+        ],
+    };
+    let res = client
+        .post("https://api.openai.com/v1/chat/completions")
+        .bearer_auth(api_key)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !res.status().is_success() {
+        let status = res.status();
+        let text = res.text().await.unwrap_or_default();
+        return Err(format!("API error {}: {}", status, text));
+    }
+    let chat: ChatResponse = res.json().await.map_err(|e| e.to_string())?;
+    chat.choices
+        .into_iter()
+        .next()
+        .map(|c| c.message.content)
+        .ok_or_else(|| "No response.".to_string())
+}

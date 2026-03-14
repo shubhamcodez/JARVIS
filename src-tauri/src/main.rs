@@ -1,6 +1,7 @@
 // Prevents additional console window on Windows in release
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod agent;
 mod chat_log;
 mod dialog;
 mod env;
@@ -37,6 +38,12 @@ fn main() {
             dialog::open_folder_picker,
             storage::get_chats_storage_path,
             storage::set_chats_storage_path,
+            agent::agent_submit_goal,
+            agent::agent_list_sessions,
+            agent::agent_get_session,
+            agent::agent_run_step,
+            agent::agent_approve_action,
+            agent::agent_get_session_outcome,
         ])
         .plugin(tauri_plugin_dialog::init())
         .run(tauri::generate_context!())

@@ -293,6 +293,106 @@ html, body {
   border-color: #58a6ff;
 }
 
+.agent-panel {
+  padding: 0.75rem 1rem;
+}
+
+.agent-new-goal {
+  margin-bottom: 1rem;
+}
+
+.agent-new-goal .settings-storage-btn {
+  margin-top: 0.5rem;
+}
+
+.agent-goal-input {
+  width: 100%;
+  padding: 0.5rem 0.625rem;
+  font-size: 0.8125rem;
+  color: #e6edf3;
+  background: #141414;
+  border: 1px solid #1a1a1a;
+  border-radius: 6px;
+  font-family: inherit;
+  resize: vertical;
+  min-height: 2.5rem;
+}
+
+.agent-goal-input:focus {
+  outline: none;
+  border-color: #58a6ff;
+}
+
+.agent-sessions {
+  margin-bottom: 1rem;
+}
+
+.agent-session-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 12rem;
+  overflow-y: auto;
+}
+
+.agent-empty {
+  font-size: 0.8125rem;
+  color: #737373;
+  margin: 0;
+  padding: 0.5rem 0;
+}
+
+.agent-detail {
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid #1a1a1a;
+}
+
+.agent-subgoals {
+  font-size: 0.8125rem;
+  color: #e6edf3;
+  margin: 0.25rem 0 0.75rem;
+  padding-left: 1.25rem;
+}
+
+.agent-subgoals li {
+  margin-bottom: 0.25rem;
+}
+
+.agent-approval-modal {
+  margin: 0.75rem 0;
+  padding: 0.75rem;
+  background: #141414;
+  border: 1px solid #2a2a2a;
+  border-radius: 8px;
+}
+
+.agent-approval-description {
+  font-size: 0.8125rem;
+  color: #e6edf3;
+  margin: 0.5rem 0;
+}
+
+.agent-approval-buttons {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.agent-trace {
+  font-size: 0.6875rem;
+  color: #737373;
+  background: #0a0a0a;
+  padding: 0.5rem;
+  border-radius: 4px;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 8rem;
+  overflow-y: auto;
+  margin: 0.25rem 0 0;
+}
+
 .chat-container {
   display: flex;
   flex-direction: column;

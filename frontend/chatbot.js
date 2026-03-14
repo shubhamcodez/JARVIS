@@ -12,25 +12,31 @@ document.getElementById("titlebar-minimize").addEventListener("click", () => inv
 document.getElementById("titlebar-close").addEventListener("click", () => invoke("window_close"));
 document.getElementById("titlebar-maximize").addEventListener("click", () => invoke("window_toggle_maximize"));
 
-// Sidebar tabs: Chats | Activity | Settings
+// Sidebar tabs: Chats | Agent | Activity | Settings
 const tabChats = document.getElementById("tab-chats");
+const tabAgent = document.getElementById("tab-agent");
 const tabActivity = document.getElementById("tab-activity");
 const tabSettings = document.getElementById("tab-settings");
 const panelChats = document.getElementById("panel-chats");
+const panelAgent = document.getElementById("panel-agent");
 const panelActivity = document.getElementById("panel-activity");
 const panelSettings = document.getElementById("panel-settings");
 
 function showPanel(panel) {
   panelChats.classList.toggle("active", panel === "chats");
+  panelAgent.classList.toggle("active", panel === "agent");
   panelActivity.classList.toggle("active", panel === "activity");
   panelSettings.classList.toggle("active", panel === "settings");
   panelChats.hidden = panel !== "chats";
+  panelAgent.hidden = panel !== "agent";
   panelActivity.hidden = panel !== "activity";
   panelSettings.hidden = panel !== "settings";
   tabChats.classList.toggle("active", panel === "chats");
+  tabAgent.classList.toggle("active", panel === "agent");
   tabActivity.classList.toggle("active", panel === "activity");
   tabSettings.classList.toggle("active", panel === "settings");
   tabChats.setAttribute("aria-selected", panel === "chats");
+  tabAgent.setAttribute("aria-selected", panel === "agent");
   tabActivity.setAttribute("aria-selected", panel === "activity");
   tabSettings.setAttribute("aria-selected", panel === "settings");
 }
@@ -40,10 +46,116 @@ tabChats.addEventListener("click", () => {
   refreshChatHistory();
 });
 
+tabAgent.addEventListener("click", () => {
+  showPanel("agent");
+  refreshAgentSessions();
+});
+
 tabActivity.addEventListener("click", () => showPanel("activity"));
 tabSettings.addEventListener("click", () => {
   showPanel("settings");
   refreshSettingsStoragePath();
+});
+
+// Agent tab: submit goal, list sessions, show session detail
+const agentGoalInput = document.getElementById("agent-goal-input");
+const agentSubmitGoalBtn = document.getElementById("agent-submit-goal");
+const agentSessionList = document.getElementById("agent-session-list");
+const agentDetail = document.getElementById("agent-detail");
+const agentSubgoals = document.getElementById("agent-subgoals");
+const agentTrace = document.getElementById("agent-trace");
+
+async function refreshAgentSessions() {
+  try {
+    const ids = await invoke("agent_list_sessions");
+    agentSessionList.innerHTML = "";
+    if (!ids || ids.length === 0) {
+      agentSessionList.innerHTML = '<p class="agent-empty">No agent sessions yet. Submit a goal above.</p>';
+      return;
+    }
+    for (const id of ids) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "chat-history-item";
+      btn.setAttribute("data-agent-id", id);
+      btn.textContent = id;
+      btn.addEventListener("click", () => showAgentSession(id));
+      agentSessionList.appendChild(btn);
+    }
+  } catch (_) {
+    agentSessionList.innerHTML = '<p class="agent-empty">No agent sessions.</p>';
+  }
+}
+
+let selectedAgentSessionId = null;
+
+const agentApprovalModal = document.getElementById("agent-approval-modal");
+const agentApprovalDescription = document.getElementById("agent-approval-description");
+const agentApproveBtn = document.getElementById("agent-approve-btn");
+const agentRejectBtn = document.getElementById("agent-reject-btn");
+
+async function showAgentSession(id) {
+  selectedAgentSessionId = id;
+  try {
+    const session = await invoke("agent_get_session", { id });
+    agentDetail.hidden = false;
+    agentSubgoals.innerHTML = "";
+    for (let i = 0; i < session.subgoals.length; i++) {
+      const li = document.createElement("li");
+      li.textContent = `${i + 1}. ${session.subgoals[i]}`;
+      agentSubgoals.appendChild(li);
+    }
+    const isBlocked = session.status === "blocked" && session.blocked_reason === "awaiting_approval";
+    agentApprovalModal.hidden = !isBlocked;
+    if (isBlocked) {
+      agentApprovalDescription.textContent = session.pending_action_description || "Action pending approval.";
+    }
+    agentTrace.textContent = session.trace_lines.length ? session.trace_lines.join("\n") : "(no trace yet)";
+  } catch (_) {
+    agentDetail.hidden = true;
+  }
+}
+
+async function submitAgentApproval(approved) {
+  if (!selectedAgentSessionId) return;
+  try {
+    const summary = await invoke("agent_approve_action", { sessionId: selectedAgentSessionId, approved });
+    showAgentSession(summary.id);
+  } catch (err) {
+    console.error(err && (err.message || err));
+  }
+}
+
+agentApproveBtn.addEventListener("click", () => submitAgentApproval(true));
+agentRejectBtn.addEventListener("click", () => submitAgentApproval(false));
+
+const agentRunStepBtn = document.getElementById("agent-run-step");
+agentRunStepBtn.addEventListener("click", async () => {
+  if (!selectedAgentSessionId) return;
+  agentRunStepBtn.disabled = true;
+  try {
+    const summary = await invoke("agent_run_step", { sessionId: selectedAgentSessionId });
+    showAgentSession(summary.id);
+  } catch (err) {
+    console.error(err && (err.message || err));
+  }
+  agentRunStepBtn.disabled = false;
+});
+
+agentSubmitGoalBtn.addEventListener("click", async () => {
+  const goal = agentGoalInput.value.trim();
+  if (!goal) return;
+  agentSubmitGoalBtn.disabled = true;
+  try {
+    const summary = await invoke("agent_submit_goal", { goal });
+    agentGoalInput.value = "";
+    refreshAgentSessions();
+    showAgentSession(summary.id);
+  } catch (err) {
+    const msg = (err && (err.message || err)) || "Failed to submit goal.";
+    console.error(msg);
+  }
+  agentSubmitGoalBtn.disabled = false;
 });
 
 // Settings: storage location

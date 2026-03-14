@@ -22,12 +22,41 @@
     <aside class="sidebar">
       <div class="sidebar-tabs" role="tablist">
         <button type="button" class="sidebar-tab active" role="tab" id="tab-chats" aria-selected="true" aria-controls="panel-chats">Chats</button>
+        <button type="button" class="sidebar-tab" role="tab" id="tab-agent" aria-selected="false" aria-controls="panel-agent">Agent</button>
         <button type="button" class="sidebar-tab" role="tab" id="tab-activity" aria-selected="false" aria-controls="panel-activity">Activity</button>
         <button type="button" class="sidebar-tab" role="tab" id="tab-settings" aria-selected="false" aria-controls="panel-settings">Settings</button>
       </div>
       <div class="sidebar-panel active" id="panel-chats" role="tabpanel" aria-labelledby="tab-chats">
         <div class="sidebar-list chat-history-list" id="chat-history-list">
           <!-- Populated by JS from list_chats -->
+        </div>
+      </div>
+      <div class="sidebar-panel" id="panel-agent" role="tabpanel" aria-labelledby="tab-agent" hidden>
+        <div class="sidebar-list agent-panel" id="agent-panel">
+          <div class="agent-new-goal">
+            <label class="settings-label" for="agent-goal-input">New goal</label>
+            <textarea id="agent-goal-input" class="agent-goal-input" placeholder="e.g. Open example.com and click the first link" rows="2"></textarea>
+            <button type="button" id="agent-submit-goal" class="settings-storage-btn">Submit</button>
+          </div>
+          <div class="agent-sessions">
+            <p class="settings-label">Sessions</p>
+            <div id="agent-session-list" class="agent-session-list"></div>
+          </div>
+          <div id="agent-detail" class="agent-detail" hidden>
+            <p class="settings-label">Plan</p>
+            <ul id="agent-subgoals" class="agent-subgoals"></ul>
+            <button type="button" id="agent-run-step" class="settings-storage-btn">Run one step</button>
+            <div id="agent-approval-modal" class="agent-approval-modal" hidden>
+              <p class="settings-label">Action requires approval</p>
+              <p id="agent-approval-description" class="agent-approval-description"></p>
+              <div class="agent-approval-buttons">
+                <button type="button" id="agent-approve-btn" class="settings-storage-btn">Approve</button>
+                <button type="button" id="agent-reject-btn" class="settings-storage-btn">Reject</button>
+              </div>
+            </div>
+            <p class="settings-label">Trace</p>
+            <pre id="agent-trace" class="agent-trace"></pre>
+          </div>
         </div>
       </div>
       <div class="sidebar-panel" id="panel-activity" role="tabpanel" aria-labelledby="tab-activity" hidden>
