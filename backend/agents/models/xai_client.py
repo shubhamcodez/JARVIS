@@ -15,6 +15,30 @@ def _client(api_key: str) -> OpenAI:
     return OpenAI(api_key=api_key, base_url=XAI_BASE_URL)
 
 
+def _build_messages(
+    message: str,
+    attachment_paths: Optional[list[str]] = None,
+    history: Optional[list[dict]] = None,
+    system_content: Optional[str] = None,
+) -> list[dict]:
+    """Build API messages list: optional system, then history or single user message."""
+    messages = []
+    if system_content and system_content.strip():
+        messages.append({"role": "system", "content": system_content.strip()})
+    if history:
+        for m in history:
+            role = (m.get("role") or "user").strip().lower()
+            if role not in ("user", "assistant", "system"):
+                role = "user"
+            content = (m.get("content") or "").strip()
+            messages.append({"role": role, "content": content or " "})
+        if attachment_paths and messages and messages[-1].get("role") == "user":
+            messages[-1]["content"] = _user_content(messages[-1]["content"], attachment_paths)
+    else:
+        messages.append({"role": "user", "content": _user_content(message, attachment_paths)})
+    return messages
+
+
 def _user_content(message: str, attachment_paths: Optional[list[str]] = None) -> str:
     """Build user content string for chat (shared by chat and chat_stream)."""
     message = (message or "").strip()
@@ -37,24 +61,36 @@ def _user_content(message: str, attachment_paths: Optional[list[str]] = None) ->
     return message or "Hello."
 
 
-def chat(api_key: str, message: str, attachment_paths: Optional[list[str]] = None) -> str:
-    """Chat: text-only or with file uploads."""
+def chat(
+    api_key: str,
+    message: str,
+    attachment_paths: Optional[list[str]] = None,
+    history: Optional[list[dict]] = None,
+    system_content: Optional[str] = None,
+) -> str:
+    """Chat: single message or full history. Optional system_content (e.g. memory context)."""
     client = _client(api_key)
-    user_content = _user_content(message, attachment_paths)
+    messages = _build_messages(message, attachment_paths, history, system_content)
     resp = client.chat.completions.create(
         model=CHAT_MODEL,
-        messages=[{"role": "user", "content": user_content}],
+        messages=messages,
     )
     return (resp.choices[0].message.content or "No response.").strip()
 
 
-def chat_stream(api_key: str, message: str, attachment_paths: Optional[list[str]] = None):
-    """Chat with streaming: yields content chunks (str) as they arrive."""
+def chat_stream(
+    api_key: str,
+    message: str,
+    attachment_paths: Optional[list[str]] = None,
+    history: Optional[list[dict]] = None,
+    system_content: Optional[str] = None,
+):
+    """Chat with streaming: single message or full history. Optional system_content."""
     client = _client(api_key)
-    user_content = _user_content(message, attachment_paths)
+    messages = _build_messages(message, attachment_paths, history, system_content)
     stream = client.chat.completions.create(
         model=CHAT_MODEL,
-        messages=[{"role": "user", "content": user_content}],
+        messages=messages,
         stream=True,
     )
     for chunk in stream:

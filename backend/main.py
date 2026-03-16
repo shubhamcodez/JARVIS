@@ -21,7 +21,7 @@ from pydantic import BaseModel
 from config import get_llm_api_key, get_llm_provider, get_openai_api_key, set_llm_provider
 from agents.models import get_llm_client
 from agents.supervisor import supervisor_decision
-from memory import get_memory_store, ingest_chat
+from memory import get_memory_store, ingest_chat, run_retrieval_pipeline
 from memory.chat_log import (
     append_chat_log,
     create_new_chat,
@@ -231,14 +231,16 @@ async def send_message_stream(body: SendMessageRequest):
     has_attachments = len(attachment_paths) > 0
     client = get_llm_client(provider)
 
-    async def _stream_chat_reply(api_key_, msg_, paths_):
+    async def _stream_chat_reply(api_key_, msg_, paths_, history_=None, system_content_=None):
         """Run sync chat_stream in executor and yield SSE as chunks arrive via queue."""
         chunk_queue = queue.Queue()
         loop = asyncio.get_event_loop()
 
         def producer():
             try:
-                for c in client.chat_stream(api_key_, msg_, paths_):
+                for c in client.chat_stream(
+                    api_key_, msg_, paths_, history=history_, system_content=system_content_
+                ):
                     chunk_queue.put(c)
             finally:
                 chunk_queue.put(None)
@@ -253,16 +255,38 @@ async def send_message_stream(body: SendMessageRequest):
             yield f"data: {json.dumps({'delta': chunk})}\n\n"
         yield f"data: {json.dumps({'done': True, 'reply': ''.join(full)})}\n\n"
 
+    def _chat_history_and_system():
+        """Load conversation history and optional memory context for chat."""
+        hist = read_chat_log(chat_id)[-40:] if chat_id else None
+        sys_content = None
+        try:
+            from config import get_openai_api_key
+            store = get_memory_store()
+            if len(store) > 0:
+                sys_content, _ = run_retrieval_pipeline(
+                    store, get_openai_api_key(),
+                    current_message=message,
+                    recent_turns=hist or [],
+                    task_state={"route": "chat"},
+                    top_k=10, include_raw_top_n=3,
+                )
+                sys_content = (sys_content or "").strip() or None
+        except Exception:
+            pass
+        return hist, sys_content
+
     async def event_stream():
         # Attachments-only: go straight to chat stream
         if not message and has_attachments:
             msg = "Please summarize or answer based on the attached documents."
-            async for line in _stream_chat_reply(api_key, msg, attachment_paths):
+            hist, sys = await asyncio.to_thread(_chat_history_and_system)
+            async for line in _stream_chat_reply(api_key, msg, attachment_paths, hist, sys):
                 yield line
             return
 
         if not message:
-            async for line in _stream_chat_reply(api_key, "Hello.", None):
+            hist, sys = await asyncio.to_thread(_chat_history_and_system)
+            async for line in _stream_chat_reply(api_key, "Hello.", None, hist, sys):
                 yield line
             return
 
@@ -271,7 +295,10 @@ async def send_message_stream(body: SendMessageRequest):
         is_task = decision.get("run_agent") and bool(goal)
 
         if not is_task:
-            async for line in _stream_chat_reply(api_key, message, attachment_paths or None):
+            hist, sys = await asyncio.to_thread(_chat_history_and_system)
+            async for line in _stream_chat_reply(
+                api_key, message, attachment_paths or None, hist, sys
+            ):
                 yield line
             return
 

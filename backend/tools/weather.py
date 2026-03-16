@@ -1,11 +1,14 @@
 """Weather tool: location string → current conditions via Open-Meteo (no API key)."""
 from __future__ import annotations
 
+import json
 import urllib.parse
 import urllib.request
-import json
 from typing import Optional
 
+import openmeteo_requests
+
+# Geocoding is separate from forecast API
 GEOCODE_URL = "https://geocoding-api.open-meteo.com/v1/search"
 FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
 
@@ -34,6 +37,16 @@ WEATHER_DESCRIPTIONS = {
     99: "thunderstorm with heavy hail",
 }
 
+# Shared client for forecast requests
+_om_client = None
+
+
+def _get_client():
+    global _om_client
+    if _om_client is None:
+        _om_client = openmeteo_requests.Client()
+    return _om_client
+
 
 def _geocode(location: str) -> Optional[tuple[float, float, str]]:
     """Resolve location string to (lat, lon, display_name). Returns None if not found."""
@@ -59,48 +72,46 @@ def _geocode(location: str) -> Optional[tuple[float, float, str]]:
     return (float(lat), float(lon), str(name))
 
 
-def _fetch_weather(lat: float, lon: float) -> Optional[dict]:
-    """Get current weather for lat/lon from Open-Meteo."""
-    params = urllib.parse.urlencode({
-        "latitude": lat,
-        "longitude": lon,
-        "current": "temperature_2m,relative_humidity_2m,weather_code,wind_speed_10m",
-    })
-    url = f"{FORECAST_URL}?{params}"
-    try:
-        with urllib.request.urlopen(url, timeout=5) as resp:
-            return json.loads(resp.read().decode("utf-8"))
-    except Exception:
-        return None
-
-
 def get_weather(location: str) -> str:
     """
     Get current weather for a location (city name or place).
-    Uses Open-Meteo; no API key required.
+    Uses Open-Meteo (openmeteo-requests); no API key required.
     Returns a short human-readable string or an error message.
     """
     loc = _geocode(location)
     if not loc:
         return f"Could not find location: {location!r}. Try a city name or place."
     lat, lon, name = loc
-    data = _fetch_weather(lat, lon)
-    if not data:
+
+    # Request current + hourly (matches Open-Meteo forecast API)
+    params = {
+        "latitude": lat,
+        "longitude": lon,
+        "current": ["temperature_2m", "relative_humidity_2m", "weather_code", "wind_speed_10m"],
+        "hourly": ["temperature_2m", "relative_humidity_2m", "wind_speed_10m"],
+    }
+    try:
+        responses = _get_client().weather_api(FORECAST_URL, params=params)
+    except Exception:
         return f"Weather unavailable for {name}."
-    current = (data.get("current") or {})
-    temp = current.get("temperature_2m")
-    unit = (data.get("current_units") or {}).get("temperature_2m", "°C")
-    humidity = current.get("relative_humidity_2m")
-    code = current.get("weather_code", 0)
-    wind = current.get("wind_speed_10m")
-    wind_unit = (data.get("current_units") or {}).get("wind_speed_10m", "km/h")
+
+    if not responses:
+        return f"Weather unavailable for {name}."
+
+    response = responses[0]
+    current = response.Current()
+    # Order matches params["current"]: temperature_2m, relative_humidity_2m, weather_code, wind_speed_10m
+    temp = current.Variables(0).Value()
+    humidity = current.Variables(1).Value()
+    code = int(current.Variables(2).Value())
+    wind = current.Variables(3).Value()
 
     desc = WEATHER_DESCRIPTIONS.get(code, f"code {code}")
     parts = [f"{name}: {desc}"]
     if temp is not None:
-        parts.append(f" {temp}{unit}")
+        parts.append(f" {temp:.0f}°C")
     if humidity is not None:
-        parts.append(f", humidity {humidity}%")
+        parts.append(f", humidity {humidity:.0f}%")
     if wind is not None:
-        parts.append(f", wind {wind} {wind_unit}")
+        parts.append(f", wind {wind:.1f} km/h")
     return "".join(parts).strip()

@@ -50,7 +50,7 @@ async def _supervisor_node(state: RouterState) -> RouterState:
 async def _chat_node(state: RouterState) -> RouterState:
     from agents.models import get_llm_client
 
-    from memory import get_memory_store, inject_memory_into_user_message, run_retrieval_pipeline
+    from memory import get_memory_store, run_retrieval_pipeline
     from memory.chat_log import read_chat_log
 
     api_key = state["api_key"]
@@ -61,7 +61,13 @@ async def _chat_node(state: RouterState) -> RouterState:
     if not message and paths:
         message = "Please summarize or answer based on the attached documents."
 
-    # Retrieval: current conversation → query → vector search → inject into prompt
+    chat_id = state.get("chat_id") or ""
+    # Load conversation history (frontend already appended current user message)
+    recent_turns = read_chat_log(chat_id) if chat_id else []
+    max_history = 40
+    history = recent_turns[-max_history:] if recent_turns else None
+
+    # Retrieval: current conversation → query → vector search → inject as system context
     memory_context = ""
     try:
         from config import get_openai_api_key
@@ -69,8 +75,6 @@ async def _chat_node(state: RouterState) -> RouterState:
         store = get_memory_store()
         if len(store) > 0:
             openai_api_key = get_openai_api_key()
-            chat_id = state.get("chat_id") or ""
-            recent_turns = read_chat_log(chat_id) if chat_id else []
             task_state = {"goal": state.get("goal"), "route": "chat"}
             memory_context, _ = run_retrieval_pipeline(
                 store,
@@ -86,19 +90,21 @@ async def _chat_node(state: RouterState) -> RouterState:
 
     # Optional tool use (e.g. weather)
     tool_used = None
-    effective_message = inject_memory_into_user_message(
-        message or "Hello.", memory_context or None, working_state=None
-    )
     weather_tool = _try_weather_tool(message or "")
     if weather_tool:
         location, tool_result = weather_tool
         tool_used = {"name": "weather", "input": location, "result": tool_result}
-        effective_message = (
-            effective_message
-            + f"\n\n[Tool result – weather for {location}]: {tool_result}\nUse this to answer the user."
-        )
+        memory_context = (memory_context or "") + f"\n\n[Tool result – weather for {location}]: {tool_result}\nUse this to answer the user."
+
+    # Build system content (memory + tool) and call with history so the model sees the conversation
+    system_content = (memory_context or "").strip() or None
     reply = await asyncio.to_thread(
-        client.chat, api_key, effective_message, paths if paths else None
+        client.chat,
+        api_key,
+        message or "Hello.",
+        paths if paths else None,
+        history,
+        system_content,
     )
     out: RouterState = {"reply": reply, "route": "chat"}
     if tool_used:
