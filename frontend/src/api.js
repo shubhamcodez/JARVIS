@@ -114,6 +114,12 @@ export async function setCurrentChat(chatId) {
   });
 }
 
+/** Create a new empty chat and set it as current. Returns the new chat_id. */
+export async function createNewChat() {
+  const { chat_id } = await request('/chat/new', { method: 'POST' });
+  return chat_id;
+}
+
 export async function getCurrentChatId() {
   const { chat_id } = await request('/chat/current-id');
   return chat_id;

@@ -85,6 +85,19 @@ def get_current_chat_id() -> Optional[str]:
     return _current_path.stem
 
 
+def create_new_chat() -> str:
+    """Create an empty chat file, set it as current, return its id."""
+    global _current_path
+    root = chats_dir()
+    root.mkdir(parents=True, exist_ok=True)
+    chat_id = str(int(time.time()))
+    path = root / f"{chat_id}.{CHAT_EXT}"
+    data = {"id": chat_id, "title": "New chat", "messages": [], "agent_session_ids": []}
+    _save(path, data)
+    _current_path = path
+    return chat_id
+
+
 def clear_current_chat() -> None:
     """Clear current chat (e.g. after storage path change)."""
     global _current_path

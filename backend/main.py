@@ -8,20 +8,22 @@ from typing import Optional
 
 import json
 
-from fastapi import FastAPI, File, Form, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, File, Form, Query, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from config import get_llm_api_key, get_llm_provider, set_llm_provider
+from config import get_llm_api_key, get_llm_provider, get_openai_api_key, set_llm_provider
 from agents.models import get_llm_client
 from agents.supervisor import supervisor_decision
+from memory import get_memory_store, ingest_chat
 from memory.chat_log import (
     append_chat_log,
-    list_chats,
-    set_current_chat,
+    create_new_chat,
     get_current_chat_id,
+    list_chats,
     read_chat_log,
+    set_current_chat,
 )
 from storage import get_chats_storage_path, set_chats_storage_path
 from agents.router import create_router_graph
@@ -31,6 +33,7 @@ from observability.eval_runner import run_evals_for_all_models, pass_at_k
 from observability.evals import load_eval_cases, load_eval_runs
 from observability.optimize import run_optimization_step, get_latest_optimization_stats
 from observability.human_eval import run_human_eval_benchmark
+from tools import get_weather
 
 app = FastAPI(title="JARVIS API")
 app.add_middleware(
@@ -333,6 +336,14 @@ async def api_append_chat_log(body: AppendChatLogRequest):
     append_chat_log(body.role, body.content)
     return {}
 
+
+@app.post("/chat/new")
+async def api_new_chat():
+    """Create a new empty chat and set it as current. Returns the new chat_id."""
+    chat_id = create_new_chat()
+    return {"chat_id": chat_id}
+
+
 @app.get("/chat/list")
 async def api_list_chats():
     return list_chats()
@@ -352,6 +363,23 @@ async def api_get_current_chat_id():
 @app.get("/chat/read/{chat_id}")
 async def api_read_chat_log(chat_id: str):
     return read_chat_log(chat_id)
+
+
+# --- Memory: vector retrieval and ingest ---
+class IngestChatRequest(BaseModel):
+    chat_id: str
+
+
+@app.post("/memory/ingest")
+async def api_memory_ingest(body: IngestChatRequest):
+    """Ingest a chat's history into the vector store for retrieval. Requires OPENAI_API_KEY."""
+    try:
+        api_key = get_openai_api_key()
+    except Exception as e:
+        return {"ok": False, "error": str(e), "chunks_added": 0}
+    store = get_memory_store()
+    n = ingest_chat(store, api_key, body.chat_id)
+    return {"ok": True, "chunks_added": n}
 
 
 # --- Storage ---
@@ -476,6 +504,14 @@ async def websocket_agent_steps(ws: WebSocket):
     finally:
         if ws in _ws_connections:
             _ws_connections.remove(ws)
+
+
+# --- Tools ---
+@app.get("/tools/weather")
+async def api_tools_weather(location: str = Query(..., description="City or place name")):
+    """Get current weather for a location (Open-Meteo, no API key)."""
+    result = await asyncio.to_thread(get_weather, location)
+    return {"location": location, "result": result}
 
 
 @app.get("/health")

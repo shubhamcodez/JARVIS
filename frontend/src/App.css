@@ -108,6 +108,26 @@
   min-height: 0;
 }
 
+.chat-new-btn {
+  margin: 0.5rem 0.25rem;
+  padding: 0.5rem 0.75rem;
+  border: 1px dashed #333;
+  border-radius: 6px;
+  background: transparent;
+  color: #58a6ff;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  cursor: pointer;
+  text-align: center;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.chat-new-btn:hover {
+  background: rgba(88, 166, 255, 0.1);
+  border-color: #58a6ff;
+  color: #79b8ff;
+}
+
 .chat-history-list {
   display: flex;
   flex-direction: column;

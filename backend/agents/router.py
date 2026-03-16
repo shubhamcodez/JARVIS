@@ -23,6 +23,9 @@ async def _supervisor_node(state: RouterState) -> RouterState:
 async def _chat_node(state: RouterState) -> RouterState:
     from agents.models import get_llm_client
 
+    from memory import get_memory_store, inject_memory_into_user_message, run_retrieval_pipeline
+    from memory.chat_log import read_chat_log
+
     api_key = state["api_key"]
     provider = state.get("provider") or "openai"
     client = get_llm_client(provider)
@@ -30,8 +33,35 @@ async def _chat_node(state: RouterState) -> RouterState:
     paths = state.get("attachment_paths") or []
     if not message and paths:
         message = "Please summarize or answer based on the attached documents."
+
+    # Retrieval: current conversation → query → vector search → inject into prompt
+    memory_context = ""
+    try:
+        from config import get_openai_api_key
+
+        store = get_memory_store()
+        if len(store) > 0:
+            openai_api_key = get_openai_api_key()
+            chat_id = state.get("chat_id") or ""
+            recent_turns = read_chat_log(chat_id) if chat_id else []
+            task_state = {"goal": state.get("goal"), "route": "chat"}
+            memory_context, _ = run_retrieval_pipeline(
+                store,
+                openai_api_key,
+                current_message=message,
+                recent_turns=recent_turns,
+                task_state=task_state,
+                top_k=10,
+                include_raw_top_n=3,
+            )
+    except Exception:
+        pass
+
+    effective_message = inject_memory_into_user_message(
+        message or "Hello.", memory_context or None, working_state=None
+    )
     reply = await asyncio.to_thread(
-        client.chat, api_key, message or "Hello.", paths if paths else None
+        client.chat, api_key, effective_message, paths if paths else None
     )
     return {"reply": reply, "route": "chat"}
 

@@ -4,6 +4,7 @@ import {
   setCurrentChat,
   getCurrentChatId,
   readChatLog,
+  createNewChat,
   sendMessage,
   sendMessageStream,
   sendMessageWithFiles,
@@ -270,6 +271,22 @@ function App() {
             </button>
           </div>
           <div className="sidebar-panel" style={{ display: panel === 'chats' ? 'flex' : 'none' }}>
+            <button
+              type="button"
+              className="chat-new-btn"
+              onClick={async () => {
+                try {
+                  const chatId = await createNewChat()
+                  setCurrentChatIdState(chatId)
+                  setMessages([])
+                  await refreshChatList()
+                } catch (e) {
+                  console.error(e)
+                }
+              }}
+            >
+              + New chat
+            </button>
             <div className="sidebar-list chat-history-list">
               {chats.length === 0 ? (
                 <p className="chat-history-empty">No conversations yet. Start chatting to see them here.</p>
