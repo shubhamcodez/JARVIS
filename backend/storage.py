@@ -15,5 +15,5 @@ def set_chats_storage_path(path: str) -> None:
     p = chats_config_path()
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(path, encoding="utf-8")
-    from chat_log import clear_current_chat
+    from memory.chat_log import clear_current_chat
     clear_current_chat()

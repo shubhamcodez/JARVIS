@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import queue
+import time
 from typing import Optional
 
 import json
@@ -12,10 +13,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from config import get_openai_api_key
-from openai_client import chat as openai_chat, chat_stream
+from config import get_llm_api_key, get_llm_provider, set_llm_provider
+from agents.models import get_llm_client
 from agents.supervisor import supervisor_decision
-from chat_log import (
+from memory.chat_log import (
     append_chat_log,
     list_chats,
     set_current_chat,
@@ -24,6 +25,12 @@ from chat_log import (
 )
 from storage import get_chats_storage_path, set_chats_storage_path
 from agents.router import create_router_graph
+from observability.trace import trace_log, list_traces
+from observability.eval_gen import generate_evals_from_logs
+from observability.eval_runner import run_evals_for_all_models, pass_at_k
+from observability.evals import load_eval_cases, load_eval_runs
+from observability.optimize import run_optimization_step, get_latest_optimization_stats
+from observability.human_eval import run_human_eval_benchmark
 
 app = FastAPI(title="JARVIS API")
 app.add_middleware(
@@ -102,16 +109,22 @@ class SetStoragePathRequest(BaseModel):
     path: str
 
 
+class SetModelRequest(BaseModel):
+    provider: str  # "openai" or "xai"
+
+
 # --- Chat ---
 @app.post("/chat/response")
 async def chatbot_response(body: ChatbotResponseRequest):
     """Chat only (no classification)."""
-    api_key = get_openai_api_key()
+    provider = get_llm_provider()
+    api_key = get_llm_api_key()
+    client = get_llm_client(provider)
     msg = (body.message or "").strip()
     paths = body.attachment_paths or []
     if not msg and paths:
         msg = "Please summarize or answer based on the attached documents."
-    return {"reply": await asyncio.to_thread(openai_chat, api_key, msg, paths if paths else None)}
+    return {"reply": await asyncio.to_thread(client.chat, api_key, msg, paths if paths else None)}
 
 
 @app.post("/chat/send-message")
@@ -119,7 +132,8 @@ async def send_message(body: SendMessageRequest):
     """
     Main entry: LangGraph router classifies then routes to chat, browser agent, or desktop agent.
     """
-    api_key = get_openai_api_key()
+    provider = get_llm_provider()
+    api_key = get_llm_api_key()
     message = (body.message or "").strip()
     attachment_paths = body.attachment_paths or []
     chat_id = body.chat_id
@@ -153,13 +167,35 @@ async def send_message(body: SendMessageRequest):
         "attachment_paths": attachment_paths,
         "chat_id": chat_id,
         "api_key": api_key,
+        "provider": provider,
         "on_step": on_step,
     }
     graph = _get_router_graph()
     drain_task = asyncio.create_task(drain_steps())
+    start = time.perf_counter()
     try:
         result = await graph.ainvoke(initial_state)
         reply = result.get("reply") or "No response."
+        route = result.get("route") or "chat"
+        trace_log(
+            provider=provider,
+            route=route,
+            message=message,
+            reply=reply,
+            success=True,
+            duration_sec=time.perf_counter() - start,
+        )
+    except Exception as e:
+        trace_log(
+            provider=provider,
+            route="chat",
+            message=message,
+            reply="",
+            success=False,
+            error=str(e),
+            duration_sec=time.perf_counter() - start,
+        )
+        raise
     finally:
         step_queue.put(_SENTINEL)
         await drain_task
@@ -171,11 +207,13 @@ async def send_message_stream(body: SendMessageRequest):
     """
     Streaming variant: classify first; if chat, stream SSE chunks; else run agent and send one final SSE event.
     """
-    api_key = get_openai_api_key()
+    provider = get_llm_provider()
+    api_key = get_llm_api_key()
     message = (body.message or "").strip()
     attachment_paths = body.attachment_paths or []
     chat_id = body.chat_id
     has_attachments = len(attachment_paths) > 0
+    client = get_llm_client(provider)
 
     async def _stream_chat_reply(api_key_, msg_, paths_):
         """Run sync chat_stream in executor and yield SSE as chunks arrive via queue."""
@@ -184,7 +222,7 @@ async def send_message_stream(body: SendMessageRequest):
 
         def producer():
             try:
-                for c in chat_stream(api_key_, msg_, paths_):
+                for c in client.chat_stream(api_key_, msg_, paths_):
                     chunk_queue.put(c)
             finally:
                 chunk_queue.put(None)
@@ -212,7 +250,7 @@ async def send_message_stream(body: SendMessageRequest):
                 yield line
             return
 
-        decision = await asyncio.to_thread(supervisor_decision, api_key, message)
+        decision = await asyncio.to_thread(supervisor_decision, api_key, provider, message)
         goal = (decision.get("goal") or message).strip()
         is_task = decision.get("run_agent") and bool(goal)
 
@@ -248,13 +286,35 @@ async def send_message_stream(body: SendMessageRequest):
             "attachment_paths": attachment_paths,
             "chat_id": chat_id,
             "api_key": api_key,
+            "provider": provider,
             "on_step": on_step,
         }
         graph = _get_router_graph()
         drain_task = asyncio.create_task(drain_steps())
+        stream_start = time.perf_counter()
         try:
             result = await graph.ainvoke(initial_state)
             reply = result.get("reply") or "No response."
+            route = result.get("route") or "chat"
+            trace_log(
+                provider=provider,
+                route=route,
+                message=message,
+                reply=reply,
+                success=True,
+                duration_sec=time.perf_counter() - stream_start,
+            )
+        except Exception as e:
+            trace_log(
+                provider=provider,
+                route="chat",
+                message=message,
+                reply="",
+                success=False,
+                error=str(e),
+                duration_sec=time.perf_counter() - stream_start,
+            )
+            raise
         finally:
             step_queue.put(_SENTINEL)
             await drain_task
@@ -304,6 +364,71 @@ async def api_get_chats_storage_path():
 async def api_set_chats_storage_path(body: SetStoragePathRequest):
     set_chats_storage_path(body.path)
     return {}
+
+
+# --- Settings: LLM model / provider ---
+@app.get("/settings/model")
+async def api_get_model():
+    """Return current LLM provider (openai or xai)."""
+    return {"provider": get_llm_provider()}
+
+
+@app.post("/settings/model")
+async def api_set_model(body: SetModelRequest):
+    """Set LLM provider to openai or xai."""
+    set_llm_provider(body.provider)
+    return {"provider": get_llm_provider()}
+
+
+# --- Observability: traces, evals, optimization (per-model) ---
+@app.get("/observability/traces")
+async def api_get_traces(limit: int = 500):
+    """List recent trace logs (success rates, tokens, errors per run)."""
+    return {"traces": list_traces(limit=limit)}
+
+
+@app.post("/observability/evals/generate")
+async def api_generate_evals(num_traces: int = 30, num_cases: int = 5):
+    """Generate multi-turn eval cases from recent trace logs (LLM-based)."""
+    cases = generate_evals_from_logs(num_traces=num_traces, num_cases=num_cases)
+    return {"generated": len(cases), "cases": [c.to_dict() for c in cases]}
+
+
+@app.get("/observability/evals/cases")
+async def api_get_eval_cases(limit: int = 100):
+    return {"cases": [c.to_dict() for c in load_eval_cases(limit=limit)]}
+
+
+@app.post("/observability/evals/run")
+async def api_run_evals(case_limit: int = 20):
+    """Run eval cases for all models (openai, xai); record pass@k."""
+    runs = run_evals_for_all_models(case_limit=case_limit)
+    by_provider = pass_at_k([r.to_dict() for r in runs])
+    return {"runs": len(runs), "pass_at_1": by_provider}
+
+
+@app.get("/observability/evals/runs")
+async def api_get_eval_runs(limit: int = 200):
+    return {"runs": load_eval_runs(limit=limit)}
+
+
+@app.get("/observability/optimization")
+async def api_get_optimization():
+    """Latest optimization stats (success rates, eval pass, suggestions)."""
+    stats = get_latest_optimization_stats()
+    return stats if stats is not None else {"note": "Run POST /observability/optimization/run first"}
+
+
+@app.post("/observability/optimization/run")
+async def api_run_optimization():
+    """Aggregate traces + eval runs, compute per-model stats and suggestions."""
+    return run_optimization_step()
+
+
+@app.post("/observability/human-eval")
+async def api_human_eval(max_problems: int = 5):
+    """Run HumanEval benchmark for each model (optional; needs datasets)."""
+    return run_human_eval_benchmark(max_problems=max_problems)
 
 
 # --- File upload for attachments (web: frontend sends files as multipart) ---

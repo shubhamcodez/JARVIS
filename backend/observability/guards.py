@@ -1,0 +1,49 @@
+"""
+Loop corruption mitigation: detect repeated/same action, cap retries, degenerate output.
+Used inside browser/desktop agent loops to break early and avoid runaway.
+"""
+from __future__ import annotations
+
+from typing import Any, Optional
+
+
+def check_loop_corruption(
+    step: int,
+    action: str,
+    last_action: Optional[str] = None,
+    last_thought: Optional[str] = None,
+    thought: Optional[str] = None,
+    max_same_action_streak: int = 3,
+    max_steps: int = 15,
+) -> tuple[bool, str]:
+    """
+    Returns (is_corrupted, reason).
+    If is_corrupted True, caller should break the loop (e.g. return "done" with reason).
+    """
+    if step >= max_steps:
+        return True, f"max_steps ({max_steps}) reached"
+    if not action:
+        return False, ""
+    if last_action and action == last_action and (not thought or not last_thought or thought == last_thought):
+        # Caller should track streak; we only flag same action twice in a row here
+        return False, ""
+    return False, ""
+
+
+def should_stop_streak(
+    current_action: str,
+    current_thought: str,
+    history: list[dict[str, Any]],
+    streak_limit: int = 3,
+) -> bool:
+    """True if the last streak_limit steps had same action (and similar thought)."""
+    if len(history) < streak_limit:
+        return False
+    tail = history[-streak_limit:]
+    actions = [t.get("action") for t in tail]
+    if not all(a == current_action for a in actions):
+        return False
+    thoughts = [t.get("thought", "") for t in tail]
+    if current_thought and thoughts.count(current_thought) >= streak_limit:
+        return True
+    return True  # same action N times → stop

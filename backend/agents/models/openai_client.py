@@ -101,19 +101,28 @@ def vision_desktop_action(
     goal: str,
     step: int,
     last_result: Optional[str] = None,
+    image_width: Optional[int] = None,
+    image_height: Optional[int] = None,
 ) -> dict:
-    """Vision: screenshot + goal -> next action (click/type/scroll/done)."""
+    """Vision: screenshot + goal -> next action (click/type/scroll/done). Pass image_width/height for precise click coordinates."""
+    coord_rule = (
+        f"- The screenshot is exactly {image_width}×{image_height} pixels. For clicks, return \"x\" and \"y\" as integer pixel coordinates in this system: x from 0 to {image_width - 1}, y from 0 to {image_height - 1}. (0,0) is top-left. Give the center of the element to click."
+        if (image_width and image_height and image_width > 0 and image_height > 0)
+        else "- Coordinates: (0,0) is top-left. x increases right, y increases down. Give pixel coordinates for the center of the element to click."
+    )
     system = """You control the user's desktop by looking at a screenshot and deciding the next mouse/keyboard action.
 
 RULES:
 - Goal is given below. Perform ONE step at a time.
 - On Windows: taskbar is usually at the BOTTOM of the screen. Icons (Chrome, etc.) are on the taskbar. The search bar (Type here to search) is on the taskbar, often left or center.
-- If the app icon (e.g. Chrome) is visible on the taskbar: reply with action "click" and the approximate (x,y) of that icon (center of the icon).
-- If the app is NOT on the taskbar: use action "click" to click the taskbar search box first (give its approximate x,y), then on the next step you'll see the search open and use action "type" with the app name (e.g. "Chrome"), then click the search result.
-- Coordinates: (0,0) is top-left. x increases right, y increases down. Give pixel coordinates.
-- Reply with ONLY a JSON object, no markdown or other text. Include "thought": a 1–2 sentence explanation of what you see on screen and why you are taking this action. Format:
+- If the app icon (e.g. Chrome) is visible on the taskbar: reply with action "click" and the (x,y) of that icon's center.
+- If the app is NOT on the taskbar: use action "click" to click the taskbar search box first (give its center x,y), then on the next step use action "type" with the app name, then click the search result.
+"""
+    system += coord_rule + """
+
+- Reply with ONLY a JSON object, no markdown or other text. Include "thought": a 1–2 sentence explanation. Format:
 {"action": "click"|"type"|"scroll"|"done", "x": number or null, "y": number or null, "text": string or null, "scroll_amount": number or null, "description": "what you're doing", "thought": "what you see and why you're doing this"}
-- Use "done" when the goal is achieved (e.g. Chrome window is open). For "done", set thought to a brief summary.
+- Use "done" when the goal is achieved. For "done", set thought to a brief summary.
 - Use "type" to type text. Use "click" to click at (x,y). Use "scroll" with scroll_amount (positive = scroll down)."""
 
     text = f"Goal: {goal}. Step {step}. "

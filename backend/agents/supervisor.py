@@ -5,9 +5,7 @@ import json
 import re
 from typing import Optional
 
-from openai import OpenAI
-
-CHAT_MODEL = "gpt-4o"
+from agents.models import get_llm_client
 
 _SUPERVISOR_SYSTEM = """You are the JARVIS supervisor. You decide how to handle each user message.
 
@@ -32,7 +30,7 @@ Rules:
 - Be decisive. Output only valid JSON."""
 
 
-def supervisor_decision(api_key: str, user_message: str) -> dict:
+def supervisor_decision(api_key: str, provider: str, user_message: str) -> dict:
     """
     Ask the supervisor LLM to decide: chat vs browser vs desktop agent.
     Returns dict with: run_agent (bool), agent ("browser"|"desktop"|null), goal (str|null),
@@ -48,9 +46,11 @@ def supervisor_decision(api_key: str, user_message: str) -> dict:
             "next_steps": "",
         }
 
-    client = OpenAI(api_key=api_key)
+    mod = get_llm_client(provider)
+    client = mod._client(api_key)
+    model = getattr(mod, "CHAT_MODEL", "gpt-4o")
     resp = client.chat.completions.create(
-        model=CHAT_MODEL,
+        model=model,
         messages=[
             {"role": "system", "content": _SUPERVISOR_SYSTEM},
             {"role": "user", "content": user_message},

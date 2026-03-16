@@ -7,14 +7,13 @@ import json
 import re
 from typing import Optional
 
-from openai import OpenAI
-
-from config import get_openai_api_key
+from agents.models import get_llm_client
+from observability.guards import should_stop_streak
 
 # Max steps per browser session
 DEFAULT_MAX_STEPS = 10
 
-# JS to get a compact list of interactive elements for the LLM
+# JS to get a compact list of interactive elements with viewport coordinates for precise clicks
 PAGE_SUMMARY_SCRIPT = """
 () => {
   const items = [];
@@ -27,7 +26,10 @@ PAGE_SUMMARY_SCRIPT = """
     const type = el.getAttribute('type') || (tag === 'input' ? 'text' : '');
     const href = el.getAttribute('href') || '';
     if (!name && !placeholder && !href && type !== 'submit') return;
-    items.push({ i, role, name: name.slice(0, 60), placeholder: placeholder.slice(0, 40), type, href: href.slice(0, 80) });
+    const rect = el.getBoundingClientRect();
+    const centerX = Math.round(rect.left + rect.width / 2);
+    const centerY = Math.round(rect.top + rect.height / 2);
+    items.push({ i, role, name: name.slice(0, 60), placeholder: placeholder.slice(0, 40), type, href: href.slice(0, 80), centerX, centerY });
   });
   return JSON.stringify({ title: document.title, url: window.location.href, items });
 }
@@ -53,8 +55,8 @@ def _extract_url_from_goal(goal: str) -> Optional[str]:
     return None
 
 
-def _get_next_browser_action(api_key: str, goal: str, page_summary: str, step: int, last_result: Optional[str]) -> dict:
-    """Ask OpenAI for the next browser action given page summary and goal."""
+def _get_next_browser_action(api_key: str, provider: str, goal: str, page_summary: str, step: int, last_result: Optional[str]) -> dict:
+    """Ask the LLM for the next browser action given page summary and goal."""
     system = """You are a browser automation assistant. You receive a JSON summary of the current page (title, url, and a list of interactive elements with index i, role, name, placeholder, type, href).
 
 Your task: choose ONE action to get closer to the user's goal. Reply with ONLY a JSON object, no markdown or explanation.
@@ -72,9 +74,11 @@ Use the "items" array indexes (field "i") to refer to elements. Prefer clicking 
         user += f"Last result: {last_result}\n"
     user += f"Current page:\n{page_summary}\n\nReply with ONLY the JSON object."
 
-    client = OpenAI(api_key=api_key)
+    mod = get_llm_client(provider)
+    client = mod._client(api_key)
+    model = getattr(mod, "CHAT_MODEL", "gpt-4o")
     resp = client.chat.completions.create(
-        model="gpt-4o",
+        model=model,
         messages=[
             {"role": "system", "content": system},
             {"role": "user", "content": user},
@@ -95,6 +99,8 @@ async def run_browser_agent(
     max_steps: int = DEFAULT_MAX_STEPS,
     on_step=None,
     headless: bool = False,
+    api_key: Optional[str] = None,
+    provider: str = "openai",
 ) -> str:
     """
     Run the browser agent: extract URL, open in Playwright, then loop (page summary -> LLM -> action) until done.
@@ -105,7 +111,9 @@ async def run_browser_agent(
     except ImportError:
         return "Playwright is not installed. Run: poetry add playwright && poetry run playwright install chromium"
 
-    api_key = get_openai_api_key()
+    if api_key is None:
+        from config import get_llm_api_key
+        api_key = get_llm_api_key()
     url = _extract_url_from_goal(goal)
     if not url:
         return f"I couldn't find a URL in the goal: \"{goal}\". Try saying e.g. \"open https://example.com\" or \"search google for weather\"."
@@ -127,6 +135,7 @@ async def run_browser_agent(
                     shot_b64 = None
                 on_step(1, f"Opened {url}", "navigate", f"Opened {url}", None, False, screenshot_base64=shot_b64)
             step = 2
+            action_history = []
             while step <= max_steps:
                 try:
                     page_summary = await page.evaluate(PAGE_SUMMARY_SCRIPT)
@@ -142,7 +151,7 @@ async def run_browser_agent(
                     shot_b64 = None
 
                 action_obj = await asyncio.to_thread(
-                    _get_next_browser_action, api_key, goal, page_summary, step, last_result
+                    _get_next_browser_action, api_key, provider, goal, page_summary, step, last_result
                 )
                 act = (action_obj.get("action") or "done").lower()
 
@@ -155,22 +164,46 @@ async def run_browser_agent(
                         on_step(step, thought, "done", desc, action_obj.get("summary"), True, screenshot_base64=shot_b64)
                     break
 
+                action_history.append({"action": act, "thought": thought})
+                if should_stop_streak(act, thought, action_history, streak_limit=3):
+                    trace.append("Loop guard: repeated action; stopping.")
+                    if on_step:
+                        on_step(step, thought, "done", "Stopped (repeated action)", None, True, screenshot_base64=shot_b64)
+                    break
+
                 result_msg = None
                 try:
+                    try:
+                        summary_data = json.loads(page_summary)
+                        items = summary_data.get("items") or []
+                    except (json.JSONDecodeError, TypeError):
+                        items = []
+                    selector = "a[href], button, input, textarea, [role=button], [role=link], [role=textbox], [role=searchbox], [contenteditable=true]"
                     if act == "click":
                         idx = action_obj.get("index", 0)
-                        # Click by index: we need to map index back to selector
-                        selector = f"a[href], button, input, textarea, [role=button], [role=link], [role=textbox], [role=searchbox], [contenteditable=true]"
-                        loc = page.locator(selector).nth(idx)
-                        await loc.click(timeout=5000)
-                        result_msg = f"Clicked element {idx}"
+                        if 0 <= idx < len(items) and isinstance(items[idx].get("centerX"), (int, float)) and isinstance(items[idx].get("centerY"), (int, float)):
+                            cx = int(items[idx]["centerX"])
+                            cy = int(items[idx]["centerY"])
+                            await page.mouse.click(cx, cy)
+                            result_msg = f"Clicked element {idx} at ({cx}, {cy})"
+                        else:
+                            loc = page.locator(selector).nth(idx)
+                            await loc.click(timeout=5000)
+                            result_msg = f"Clicked element {idx}"
                     elif act == "type":
                         idx = action_obj.get("index", 0)
                         text = action_obj.get("text", "")
-                        selector = "a[href], button, input, textarea, [role=button], [role=link], [role=textbox], [role=searchbox], [contenteditable=true]"
-                        loc = page.locator(selector).nth(idx)
-                        await loc.fill(text, timeout=5000)
-                        result_msg = f"Typed into element {idx}"
+                        if 0 <= idx < len(items) and isinstance(items[idx].get("centerX"), (int, float)) and isinstance(items[idx].get("centerY"), (int, float)):
+                            cx = int(items[idx]["centerX"])
+                            cy = int(items[idx]["centerY"])
+                            await page.mouse.click(cx, cy)
+                            await page.keyboard.press("Control+a")
+                            await page.keyboard.type(text, delay=30)
+                            result_msg = f"Typed into element {idx} at ({cx}, {cy})"
+                        else:
+                            loc = page.locator(selector).nth(idx)
+                            await loc.fill(text, timeout=5000)
+                            result_msg = f"Typed into element {idx}"
                     elif act == "scroll":
                         direction = action_obj.get("direction", "down")
                         if direction == "up":

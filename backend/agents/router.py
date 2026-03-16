@@ -14,23 +14,26 @@ async def _supervisor_node(state: RouterState) -> RouterState:
 
     message = (state.get("message") or "").strip()
     api_key = state["api_key"]
-    decision = await asyncio.to_thread(supervisor_decision, api_key, message)
+    provider = state.get("provider") or "openai"
+    decision = await asyncio.to_thread(supervisor_decision, api_key, provider, message)
     goal = (decision.get("goal") or message).strip()
     return {"supervisor_decision": decision, "goal": goal}
 
 
 async def _chat_node(state: RouterState) -> RouterState:
-    from openai_client import chat as openai_chat
+    from agents.models import get_llm_client
 
     api_key = state["api_key"]
+    provider = state.get("provider") or "openai"
+    client = get_llm_client(provider)
     message = (state.get("message") or "").strip()
     paths = state.get("attachment_paths") or []
     if not message and paths:
         message = "Please summarize or answer based on the attached documents."
     reply = await asyncio.to_thread(
-        openai_chat, api_key, message or "Hello.", paths if paths else None
+        client.chat, api_key, message or "Hello.", paths if paths else None
     )
-    return {"reply": reply}
+    return {"reply": reply, "route": "chat"}
 
 
 def _emit_supervisor_step(state: RouterState) -> None:
@@ -50,8 +53,10 @@ async def _run_browser_node(state: RouterState) -> RouterState:
     _emit_supervisor_step(state)
     goal = state.get("goal") or ""
     on_step = state.get("on_step")
-    reply = await run_browser_agent(goal, 10, on_step, headless=False)
-    return {"reply": reply}
+    api_key = state["api_key"]
+    provider = state.get("provider") or "openai"
+    reply = await run_browser_agent(goal, 10, on_step, headless=False, api_key=api_key, provider=provider)
+    return {"reply": reply, "route": "run_browser"}
 
 
 async def _run_desktop_node(state: RouterState) -> RouterState:
@@ -60,8 +65,10 @@ async def _run_desktop_node(state: RouterState) -> RouterState:
     _emit_supervisor_step(state)
     goal = state.get("goal") or ""
     on_step = state.get("on_step")
-    reply = await asyncio.to_thread(run_desktop_agent, goal, 10, on_step)
-    return {"reply": reply}
+    api_key = state["api_key"]
+    provider = state.get("provider") or "openai"
+    reply = await asyncio.to_thread(run_desktop_agent, goal, 10, on_step, api_key=api_key, provider=provider)
+    return {"reply": reply, "route": "run_desktop"}
 
 
 def _route_after_start(state: RouterState) -> Literal["chat", "supervisor"]:

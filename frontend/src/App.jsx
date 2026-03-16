@@ -10,6 +10,8 @@ import {
   appendChatLog,
   getChatsStoragePath,
   setChatsStoragePath,
+  getModelSetting,
+  setModelSetting,
   agentStepsWsUrl,
 } from './api'
 import ReactMarkdown from 'react-markdown'
@@ -36,6 +38,7 @@ function App() {
   const [input, setInput] = useState('')
   const [attachments, setAttachments] = useState([])
   const [storagePath, setStoragePath] = useState('')
+  const [modelProvider, setModelProvider] = useState('openai')
   const [sending, setSending] = useState(false)
   const [liveReply, setLiveReply] = useState(null)
   const [agentLiveSteps, setAgentLiveSteps] = useState([])
@@ -61,6 +64,20 @@ function App() {
     }
   }, [])
 
+  const refreshModelSetting = useCallback(async () => {
+    try {
+      const provider = await getModelSetting()
+      setModelProvider(provider || 'openai')
+    } catch {
+      setModelProvider('openai')
+    }
+  }, [])
+
+  const refreshSettings = useCallback(async () => {
+    await refreshStoragePath()
+    await refreshModelSetting()
+  }, [refreshStoragePath, refreshModelSetting])
+
   const selectChat = useCallback(async (chatId) => {
     try {
       await setCurrentChat(chatId)
@@ -81,8 +98,8 @@ function App() {
   }, [refreshChatList, selectChat])
 
   useEffect(() => {
-    if (panel === 'settings') refreshStoragePath()
-  }, [panel, refreshStoragePath])
+    if (panel === 'settings') refreshSettings()
+  }, [panel, refreshSettings])
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -114,6 +131,17 @@ function App() {
       refreshChatList()
     } catch (err) {
       alert(err?.message || 'Could not change storage location.')
+    }
+  }
+
+  const handleModelChange = async (e) => {
+    const provider = e.target.value
+    if (provider !== 'openai' && provider !== 'xai') return
+    try {
+      await setModelSetting(provider)
+      setModelProvider(provider)
+    } catch (err) {
+      alert(err?.message || 'Could not save model setting.')
     }
   }
 
@@ -284,6 +312,19 @@ function App() {
                     Change
                   </button>
                 </div>
+              </div>
+              <div className="settings-section">
+                <label className="settings-label">Model</label>
+                <p className="settings-description">LLM used for chat and agents.</p>
+                <select
+                  className="settings-model-select"
+                  value={modelProvider}
+                  onChange={handleModelChange}
+                  aria-label="Model provider"
+                >
+                  <option value="openai">OpenAI (GPT-4o)</option>
+                  <option value="xai">xAI (Grok)</option>
+                </select>
               </div>
             </div>
           </div>

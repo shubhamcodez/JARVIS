@@ -1,70 +1,46 @@
 # JARVIS
 
-Python-backed chatbot with OpenAI: chat, task classification, and desktop agent (vision + automation). React frontend.
+Assistant that can chat, control the browser (Playwright), or control the desktop (screenshot + vision + pyautogui). Routes via a supervisor LLM; supports OpenAI (GPT-4o) and xAI (Grok).
 
-## Stack
+---
 
-- **Backend**: Python 3.11+, FastAPI, OpenAI API, **LangGraph** (LLM orchestration), Playwright (browser control), optional pyautogui + mss (desktop agent)
-- **Frontend**: React 18, Vite
-- **No Rust/Tauri**: runs in the browser; backend can run locally or on a server
+## Core idea: self-improving agents through evals
 
-## Setup
+The agent improves over time by **looping through evals** and turning results into **prompt and code changes**:
 
-1. **Python backend** (Poetry)
+1. **Trace every run** — Each chat and agent run is logged (provider, route, success, tokens, errors) to `jarvis-observability/traces/`.
+2. **Generate evals from logs** — An LLM turns recent traces into multi-turn evaluation cases (coherence, task completion). Stored in `jarvis-observability/evals/`.
+3. **Run evals for all models** — Each case is run with both OpenAI and xAI; optional LLM judge scores replies. Pass@1 per model is recorded.
+4. **Optimization step** — Aggregates trace stats + eval pass rates, then asks an LLM for:
+   - **Prompt modification instructions**: what to add or change in the supervisor, browser, desktop, or chat prompts (with reasons).
+   - **Code addition suggestions**: which file and what logic/code to add (e.g. retries, validation), with reasons.
 
-   Install [Poetry](https://python-poetry.org/docs/#installation) if needed, then:
+You (or a future automation layer) apply those instructions and suggestions; the next runs and evals reflect the improvements. So: **evals → scores → optimization → prompt/code suggestions → apply → better agents**.
 
-   ```bash
-   cd backend
-   poetry install
-   poetry run playwright install chromium
-   ```
+---
 
-   (Playwright needs a browser binary once; `playwright install chromium` installs it.) Run the backend with `poetry run uvicorn main:app --reload --port 8000`, or use `npm run backend` from the project root (see below).
+## Memory architecture (planned)
 
-2. **Environment**
+Structured memory so the model can use past chats, docs, and code without dumping everything into the prompt.
 
-   Create a `.env` file in the project root with:
+**Four stores**
 
-   ```
-   OPENAI_API_KEY=your-key-here
-   ```
+- **Raw chunk store** — `chunk_id`, `content`, `source_type` (chat, code, doc, note), `source_id`, `created_at`, `version`, `metadata`. Persistence for all ingested content.
+- **Vector index** (e.g. **Chroma**) — `chunk_id`, `embedding`, lightweight metadata filters. Fast semantic retrieval.
+- **Summary store** — `summary_id`, `chunk_id` or `parent_id`, short summary, structured facts/entities/decisions. Prompt-ready compression.
+- **Working state store** — Current task, active files, recent decisions, unresolved questions, last retrieved memory set. Per-session continuity.
 
-3. **Frontend**
+**Chunking**
 
-   ```bash
-   cd web
-   npm install
-   ```
+- **Chats:** 1–5 message windows, preserve speaker turns, no split across a decision. Metadata: `conversation_id`, `turn_range`, intent, decisions, open loops.
+- **Docs:** Headings/sections first, then paragraph windows; ~10–20% overlap.
+- **Code:** By file, class, function, method, config/schema block (not plain text). Metadata: `file_path`, `symbol_name`, `symbol_type`, imports/exports, line range, repo version.
 
-## Run
+**Flow**
 
-**Option A – Two terminals**
+- **Ingestion:** Parse → chunk → enrich metadata → summarize → embed → write to raw store, vector DB, summary store.
+- **Retrieval:** Query understanding → hybrid retrieval (vector + keyword + structural) → rerank → select summaries + raw chunks.
+- **Prompt assembly:** System + current request + task state + retrieved summaries + selected chunks, with token budgets (e.g. summaries first, raw chunks selectively).
+- **After each turn:** Update working state; write back only important turns (decisions, facts, artifacts) to avoid clutter.
 
-- Terminal 1: `npm run backend` (from project root) or `cd backend && poetry run uvicorn main:app --reload --port 8000` → backend at http://localhost:8000
-- Terminal 2: `npm run dev` (from project root) → frontend at http://localhost:5173
-
-**Option B – One command**
-
-- From project root: `npm run dev:all` (runs backend + frontend; requires `npm install` once at root)
-
-Open http://localhost:5173. The frontend proxies `/api` and `/ws` to the backend.
-
-## Features
-
-- **Chat**: Text and file attachments; uses OpenAI chat (with optional document handling).
-- **Supervisor agent**: A main **supervisor** (LLM) decides for each message whether to run an agent and which one (chat | browser | desktop). It returns a goal, reasoning, and **next steps**; the UI shows the supervisor plan before the chosen agent runs.
-- **Task vs chat**: The **LangGraph** router runs the supervisor, then routes to chat, browser agent, or desktop agent. URL/browser tasks (e.g. “open example.com”, “search google for X”) run the browser agent; other computer tasks run the desktop agent.
-- **Browser agent**: Playwright opens a visible Chromium window, navigates to a URL (extracted or built from the goal), then uses the LLM to choose actions (click, type, scroll) from the page’s interactive elements until the goal is done. Steps stream over the same WebSocket as the desktop agent.
-- **Desktop agent**: Screenshot → vision model → click/type/scroll (requires backend on the same machine with display; uses pyautogui + mss).
-- **Chat history**: Stored as JSON in a configurable directory (default: `chats/` in project root). Change path in Settings.
-- **Live agent steps**: WebSocket streams desktop agent steps to the UI.
-
-## API
-
-- `POST /chat/send-message` – Main entry (classify → agent or chat).
-- `POST /chat/response` – Chat only.
-- `POST /chat/send-message-with-files` – Multipart message + files.
-- `GET /chat/list`, `POST /chat/set-current`, `GET /chat/read/{id}`, `POST /chat/append` – Chat log.
-- `GET/POST /storage/chats-path` – Storage directory.
-- `WS /ws/agent-steps` – Desktop agent step events.
+This gives persistence, fast retrieval, prompt-ready summaries, and current-session continuity. Chroma is the intended vector DB for the MVP.

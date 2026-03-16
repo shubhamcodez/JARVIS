@@ -135,6 +135,20 @@ export async function setChatsStoragePath(path) {
   });
 }
 
+/** Current LLM provider: "openai" (GPT) or "xai" (Grok). */
+export async function getModelSetting() {
+  const { provider } = await request('/settings/model');
+  return provider || 'openai';
+}
+
+export async function setModelSetting(provider) {
+  await request('/settings/model', {
+    method: 'POST',
+    body: JSON.stringify({ provider: provider === 'xai' ? 'xai' : 'openai' }),
+  });
+  return provider;
+}
+
 /** WebSocket URL for agent steps (use wsOrigin for WS) */
 export function agentStepsWsUrl() {
   const base = import.meta.env.VITE_API_URL || '';

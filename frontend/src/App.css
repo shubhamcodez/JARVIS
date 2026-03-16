@@ -234,6 +234,24 @@
   border-color: #58a6ff;
 }
 
+.settings-model-select {
+  width: 100%;
+  max-width: 280px;
+  padding: 0.5rem 0.625rem;
+  font-size: 0.8125rem;
+  color: #e6edf3;
+  background: #141414;
+  border: 1px solid #1a1a1a;
+  border-radius: 6px;
+  font-family: inherit;
+  margin-top: 0.25rem;
+}
+
+.settings-model-select:focus {
+  outline: none;
+  border-color: #58a6ff;
+}
+
 .chat-container {
   display: flex;
   flex-direction: column;

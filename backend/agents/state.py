@@ -11,6 +11,8 @@ class RouterState(TypedDict, total=False):
     attachment_paths: list[str]
     chat_id: Optional[str]
     api_key: str
+    provider: str  # "openai" or "xai"
+    route: str  # "chat" | "run_browser" | "run_desktop" (set by the node that ran)
     classification: dict
     supervisor_decision: dict
     goal: str
