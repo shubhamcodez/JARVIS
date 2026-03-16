@@ -317,6 +317,15 @@ function App() {
                           <br />→ {s.result}
                         </>
                       )}
+                      {s.screenshot && (
+                        <div className="agent-step-screenshot-wrap">
+                          <img
+                            src={`data:image/png;base64,${s.screenshot}`}
+                            alt={`Step ${s.step} screenshot`}
+                            className="agent-step-screenshot"
+                          />
+                        </div>
+                      )}
                     </div>
                   ))}
                 </div>

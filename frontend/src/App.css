@@ -350,6 +350,22 @@
   color: #c9a0c9;
 }
 
+.agent-step-screenshot-wrap {
+  margin-top: 0.5rem;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid #1a1a1a;
+  background: #0a0a0a;
+}
+.agent-step-screenshot {
+  display: block;
+  max-width: 100%;
+  width: auto;
+  max-height: 280px;
+  height: auto;
+  object-fit: contain;
+}
+
 .chat-input-area {
   border-top: 1px solid #1a1a1a;
   background: #0a0a0a;

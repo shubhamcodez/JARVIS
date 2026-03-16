@@ -224,10 +224,11 @@ async def send_message_stream(body: SendMessageRequest):
         # Agent path: run graph then one event
         step_queue = queue.Queue()
 
-        def on_step(step, thought, action, description, result, done):
+        def on_step(step, thought, action, description, result, done, screenshot_base64=None):
             step_queue.put({
                 "step": step, "thought": thought or "", "action": action or "",
                 "description": description or "", "result": result, "done": done,
+                "screenshot": screenshot_base64,
             })
 
         async def drain_steps():
@@ -239,6 +240,7 @@ async def send_message_stream(body: SendMessageRequest):
                 await _emit_agent_step(
                     payload["step"], payload["thought"], payload["action"],
                     payload["description"], payload.get("result"), payload.get("done", False),
+                    payload.get("screenshot"),
                 )
 
         initial_state = {
