@@ -3,11 +3,12 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "tauri": "node node_modules/@tauri-apps/cli/tauri.js",
-    "dev": "node node_modules/@tauri-apps/cli/tauri.js dev",
-    "build": "node node_modules/@tauri-apps/cli/tauri.js build"
+    "dev": "cd web && npm run dev",
+    "build": "cd web && npm run build",
+    "backend": "cd backend && poetry run uvicorn main:app --reload --host 0.0.0.0 --port 8000",
+    "dev:all": "concurrently -n backend,web -c blue,green \"npm run backend\" \"npm run dev\""
   },
   "devDependencies": {
-    "@tauri-apps/cli": "^2.0.0"
+    "concurrently": "^8.2.2"
   }
 }

@@ -1,8 +1,11 @@
 # Dependencies
 node_modules/
 
-# Rust / Cargo
-src-tauri/target/
+# Python
+backend/.venv/
+backend/__pycache__/
+**/__pycache__/
+*.pyc
 
 # Build output
 dist/
@@ -15,6 +18,7 @@ dist/
 
 # Chat conversation logs
 chats/
+venv/
 
 # Logs and caches
 *.log
