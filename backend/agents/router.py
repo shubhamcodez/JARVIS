@@ -2,11 +2,38 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Literal
+import re
+from typing import Literal, Optional
 
 from langgraph.graph import END, StateGraph
 
 from .state import RouterState
+
+
+def _try_weather_tool(message: str) -> Optional[tuple[str, str]]:
+    """If message looks like a weather query, return (location, tool_result). Else None."""
+    lower = (message or "").strip().lower()
+    if "weather" not in lower:
+        return None
+    # "weather in London", "weather for Berlin", "weather at Tokyo", "what's the weather in Paris"
+    match = re.search(
+        r"weather\s+(?:in|for|at)\s+(.+?)(?:\?|$)",
+        lower,
+        re.IGNORECASE | re.DOTALL,
+    )
+    if match:
+        location = match.group(1).strip()
+    else:
+        # "what's the weather" -> might have location after; or use a default
+        parts = re.sub(r"what'?s?\s+the\s+weather\s*", "", lower, flags=re.IGNORECASE).strip()
+        parts = re.sub(r"^[\s?,]+", "", parts)
+        location = parts if parts else "London"
+    if not location or len(location) > 100:
+        location = "London"
+    from tools import get_weather
+
+    result = get_weather(location)
+    return (location, result)
 
 
 async def _supervisor_node(state: RouterState) -> RouterState:
@@ -57,13 +84,26 @@ async def _chat_node(state: RouterState) -> RouterState:
     except Exception:
         pass
 
+    # Optional tool use (e.g. weather)
+    tool_used = None
     effective_message = inject_memory_into_user_message(
         message or "Hello.", memory_context or None, working_state=None
     )
+    weather_tool = _try_weather_tool(message or "")
+    if weather_tool:
+        location, tool_result = weather_tool
+        tool_used = {"name": "weather", "input": location, "result": tool_result}
+        effective_message = (
+            effective_message
+            + f"\n\n[Tool result – weather for {location}]: {tool_result}\nUse this to answer the user."
+        )
     reply = await asyncio.to_thread(
         client.chat, api_key, effective_message, paths if paths else None
     )
-    return {"reply": reply, "route": "chat"}
+    out: RouterState = {"reply": reply, "route": "chat"}
+    if tool_used:
+        out["tool_used"] = tool_used
+    return out
 
 
 def _emit_supervisor_step(state: RouterState) -> None:

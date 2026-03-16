@@ -135,6 +135,24 @@
   padding: 0.5rem 0.25rem;
 }
 
+.chat-history-item-wrap {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  border-radius: 8px;
+  transition: background 0.15s ease;
+}
+
+.chat-history-item-wrap:hover,
+.chat-history-item-wrap.active {
+  background: #141414;
+}
+
+.chat-history-item-wrap .chat-history-item {
+  flex: 1;
+  min-width: 0;
+}
+
 .chat-history-item {
   display: flex;
   align-items: center;
@@ -153,7 +171,32 @@
 
 .chat-history-item:hover,
 .chat-history-item.active {
-  background: #141414;
+  background: transparent;
+}
+
+.chat-history-item-wrap:hover .chat-history-item,
+.chat-history-item-wrap.active .chat-history-item {
+  background: transparent;
+}
+
+.chat-history-delete {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: #737373;
+  font-size: 1.25rem;
+  line-height: 1;
+  cursor: pointer;
+  border-radius: 6px;
+  transition: color 0.15s ease, background 0.15s ease;
+}
+
+.chat-history-delete:hover {
+  color: #f85149;
+  background: rgba(248, 81, 73, 0.15);
 }
 
 .chat-history-item .chat-history-icon {
@@ -307,6 +350,30 @@
   align-self: flex-start;
   background: #141414;
   border: 1px solid #1a1a1a;
+}
+
+.msg-tool {
+  align-self: flex-start;
+  background: #0d1117;
+  border: 1px solid #30363d;
+  border-left: 3px solid #58a6ff;
+}
+
+.msg-tool-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.msg-tool-label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #58a6ff;
+}
+
+.msg-tool-result {
+  font-size: 0.875rem;
+  color: #e6edf3;
 }
 
 .msg-text {

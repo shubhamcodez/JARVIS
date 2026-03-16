@@ -20,6 +20,7 @@ from memory import get_memory_store, ingest_chat
 from memory.chat_log import (
     append_chat_log,
     create_new_chat,
+    delete_chat,
     get_current_chat_id,
     list_chats,
     read_chat_log,
@@ -180,6 +181,10 @@ async def send_message(body: SendMessageRequest):
         result = await graph.ainvoke(initial_state)
         reply = result.get("reply") or "No response."
         route = result.get("route") or "chat"
+        tool_used = result.get("tool_used")
+        if tool_used and chat_id:
+            set_current_chat(chat_id)
+            append_chat_log("tool", json.dumps(tool_used))
         trace_log(
             provider=provider,
             route=route,
@@ -202,7 +207,10 @@ async def send_message(body: SendMessageRequest):
     finally:
         step_queue.put(_SENTINEL)
         await drain_task
-    return {"reply": reply}
+    out = {"reply": reply}
+    if result.get("tool_used"):
+        out["tool_used"] = result["tool_used"]
+    return out
 
 
 @app.post("/chat/send-message/stream")
@@ -299,6 +307,10 @@ async def send_message_stream(body: SendMessageRequest):
             result = await graph.ainvoke(initial_state)
             reply = result.get("reply") or "No response."
             route = result.get("route") or "chat"
+            tool_used = result.get("tool_used")
+            if tool_used and chat_id:
+                set_current_chat(chat_id)
+                append_chat_log("tool", json.dumps(tool_used))
             trace_log(
                 provider=provider,
                 route=route,
@@ -321,7 +333,10 @@ async def send_message_stream(body: SendMessageRequest):
         finally:
             step_queue.put(_SENTINEL)
             await drain_task
-        yield f"data: {json.dumps({'done': True, 'reply': reply})}\n\n"
+        payload = {"done": True, "reply": reply}
+        if tool_used:
+            payload["tool_used"] = tool_used
+        yield f"data: {json.dumps(payload)}\n\n"
 
     return StreamingResponse(
         event_stream(),
@@ -363,6 +378,13 @@ async def api_get_current_chat_id():
 @app.get("/chat/read/{chat_id}")
 async def api_read_chat_log(chat_id: str):
     return read_chat_log(chat_id)
+
+
+@app.delete("/chat/{chat_id}")
+async def api_delete_chat(chat_id: str):
+    """Delete a chat by id. Returns ok and deleted=true if the chat was removed."""
+    deleted = delete_chat(chat_id)
+    return {"ok": True, "deleted": deleted}
 
 
 # --- Memory: vector retrieval and ingest ---

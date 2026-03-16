@@ -35,9 +35,10 @@ export async function sendMessage(message, attachmentPaths = null, chatId = null
 
 /**
  * Stream send-message: calls onChunk(delta) as tokens arrive, then onDone(fullReply).
+ * If the backend used a tool, calls onToolUsed(toolUsed) and returns { reply, tool_used }.
  * Uses SSE endpoint /chat/send-message/stream.
  */
-export async function sendMessageStream(message, attachmentPaths, chatId, { onChunk, onDone }) {
+export async function sendMessageStream(message, attachmentPaths, chatId, { onChunk, onDone, onToolUsed }) {
   const base = import.meta.env.VITE_API_URL || '/api'
   const res = await fetch(base + '/chat/send-message/stream', {
     method: 'POST',
@@ -53,6 +54,7 @@ export async function sendMessageStream(message, attachmentPaths, chatId, { onCh
   const decoder = new TextDecoder()
   let buffer = ''
   let full = ''
+  let toolUsed = null
   while (true) {
     const { value, done } = await reader.read()
     if (done) break
@@ -69,15 +71,19 @@ export async function sendMessageStream(message, attachmentPaths, chatId, { onCh
           }
           if (data.done && data.reply != null) {
             full = data.reply
+            if (data.tool_used) {
+              toolUsed = data.tool_used
+              onToolUsed?.(data.tool_used)
+            }
             onDone?.(data.reply)
-            return data.reply
+            return { reply: data.reply, tool_used: data.tool_used ?? null }
           }
         } catch (_) {}
       }
     }
   }
   if (full) onDone?.(full)
-  return full
+  return { reply: full, tool_used: toolUsed }
 }
 
 /** Send message with file uploads (multipart). Use when user attached files. */
@@ -118,6 +124,11 @@ export async function setCurrentChat(chatId) {
 export async function createNewChat() {
   const { chat_id } = await request('/chat/new', { method: 'POST' });
   return chat_id;
+}
+
+/** Delete a chat by id. Returns { ok, deleted }. */
+export async function deleteChat(chatId) {
+  return request(`/chat/${encodeURIComponent(chatId)}`, { method: 'DELETE' });
 }
 
 export async function getCurrentChatId() {

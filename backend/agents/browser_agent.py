@@ -55,8 +55,17 @@ def _extract_url_from_goal(goal: str) -> Optional[str]:
     return None
 
 
-def _get_next_browser_action(api_key: str, provider: str, goal: str, page_summary: str, step: int, last_result: Optional[str]) -> dict:
-    """Ask the LLM for the next browser action given page summary and goal."""
+def _get_next_browser_action(
+    api_key: str,
+    provider: str,
+    goal: str,
+    page_summary: str,
+    step: int,
+    last_result: Optional[str],
+    plan: Optional[list[str]] = None,
+    plan_index: int = 0,
+) -> dict:
+    """Ask the LLM for the next browser action given page summary, goal, and current plan step."""
     system = """You are a browser automation assistant. You receive a JSON summary of the current page (title, url, and a list of interactive elements with index i, role, name, placeholder, type, href).
 
 Your task: choose ONE action to get closer to the user's goal. Reply with ONLY a JSON object, no markdown or explanation.
@@ -70,6 +79,8 @@ Actions:
 Use the "items" array indexes (field "i") to refer to elements. Prefer clicking links/buttons by index, and typing into inputs by index. If the goal is already achieved, respond with action "done"."""
 
     user = f"Goal: {goal}\nStep: {step}\n"
+    if plan and 0 <= plan_index < len(plan):
+        user += f"Current plan step ({plan_index + 1}/{len(plan)}): {plan[plan_index]}\n"
     if last_result:
         user += f"Last result: {last_result}\n"
     user += f"Current page:\n{page_summary}\n\nReply with ONLY the JSON object."
@@ -103,13 +114,15 @@ async def run_browser_agent(
     provider: str = "openai",
 ) -> str:
     """
-    Run the browser agent: extract URL, open in Playwright, then loop (page summary -> LLM -> action) until done.
-    on_step(step, thought, action, description, result, done) is called for each step.
+    Run the browser agent: plan steps first, then execute with retry/next/back based on outcome.
+    on_step(step, thought, action, description, result, done) is called for each step; step 0 is the plan.
     """
     try:
         from playwright.async_api import async_playwright
     except ImportError:
         return "Playwright is not installed. Run: poetry add playwright && poetry run playwright install chromium"
+
+    from agents.planning import evaluate_step_outcome, get_plan
 
     if api_key is None:
         from config import get_llm_api_key
@@ -120,6 +133,20 @@ async def run_browser_agent(
 
     trace = []
     last_result: Optional[str] = None
+
+    # Plan first
+    plan = await asyncio.to_thread(get_plan, goal, "browser", api_key, provider)
+    if not plan:
+        plan = [goal]
+    plan_text = "Plan:\n" + "\n".join(f"  {i+1}. {s}" for i, s in enumerate(plan))
+    trace.append(plan_text)
+    if on_step:
+        on_step(0, plan_text, "plan", plan_text, None, False, screenshot_base64=None)
+
+    plan_index = 0
+    retry_count = 0
+    max_retries_same_step = 2
+    execution_step = 1
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=headless)
@@ -134,9 +161,10 @@ async def run_browser_agent(
                 except Exception:
                     shot_b64 = None
                 on_step(1, f"Opened {url}", "navigate", f"Opened {url}", None, False, screenshot_base64=shot_b64)
-            step = 2
+            execution_step = 2
             action_history = []
-            while step <= max_steps:
+
+            while execution_step <= max_steps:
                 try:
                     page_summary = await page.evaluate(PAGE_SUMMARY_SCRIPT)
                 except Exception as e:
@@ -151,24 +179,31 @@ async def run_browser_agent(
                     shot_b64 = None
 
                 action_obj = await asyncio.to_thread(
-                    _get_next_browser_action, api_key, provider, goal, page_summary, step, last_result
+                    _get_next_browser_action,
+                    api_key,
+                    provider,
+                    goal,
+                    page_summary,
+                    execution_step,
+                    last_result,
+                    plan=plan,
+                    plan_index=plan_index,
                 )
                 act = (action_obj.get("action") or "done").lower()
-
                 thought = action_obj.get("summary") or action_obj.get("thought") or act
                 desc = f"Action: {act}"
 
                 if act == "done":
                     trace.append(f"Done: {action_obj.get('summary', '')}")
                     if on_step:
-                        on_step(step, thought, "done", desc, action_obj.get("summary"), True, screenshot_base64=shot_b64)
+                        on_step(execution_step, thought, "done", desc, action_obj.get("summary"), True, screenshot_base64=shot_b64)
                     break
 
                 action_history.append({"action": act, "thought": thought})
                 if should_stop_streak(act, thought, action_history, streak_limit=3):
                     trace.append("Loop guard: repeated action; stopping.")
                     if on_step:
-                        on_step(step, thought, "done", "Stopped (repeated action)", None, True, screenshot_base64=shot_b64)
+                        on_step(execution_step, thought, "done", "Stopped (repeated action)", None, True, screenshot_base64=shot_b64)
                     break
 
                 result_msg = None
@@ -215,15 +250,53 @@ async def run_browser_agent(
                     result_msg = f"Error: {e}"
 
                 last_result = result_msg
-                trace.append(f"Step {step}: {desc} → {result_msg}")
+                current_plan_step = plan[plan_index] if 0 <= plan_index < len(plan) else ""
+                trace.append(f"Step {execution_step} (plan {plan_index + 1}/{len(plan)}): {desc} → {result_msg}")
                 if on_step:
                     try:
                         shot_after = await page.screenshot(type="png")
                         shot_after_b64 = base64.b64encode(shot_after).decode("ascii")
                     except Exception:
                         shot_after_b64 = None
-                    on_step(step, thought, act, desc, result_msg, False, screenshot_base64=shot_after_b64)
-                step += 1
+                    on_step(execution_step, thought, act, desc, result_msg, False, screenshot_base64=shot_after_b64)
+
+                # Evaluate outcome and decide retry / next / back
+                eval_result = await asyncio.to_thread(
+                    evaluate_step_outcome,
+                    goal,
+                    current_plan_step,
+                    result_msg,
+                    plan,
+                    plan_index,
+                    api_key,
+                    provider,
+                )
+                decision = (eval_result.get("decision") or "next").lower()
+                reason = eval_result.get("reason") or ""
+
+                if decision == "retry":
+                    retry_count += 1
+                    if retry_count > max_retries_same_step:
+                        retry_count = 0
+                        plan_index = min(plan_index + 1, len(plan) - 1)
+                        trace.append(f"Retries exhausted; moving to next plan step. {reason}")
+                    else:
+                        trace.append(f"Retrying same step ({retry_count}/{max_retries_same_step}). {reason}")
+                elif decision == "next":
+                    retry_count = 0
+                    plan_index += 1
+                    if plan_index >= len(plan):
+                        trace.append("Plan completed.")
+                        if on_step:
+                            on_step(execution_step, "Plan completed", "done", "Plan completed", None, True, screenshot_base64=None)
+                        break
+                    trace.append(f"Next plan step: {plan[plan_index]}. {reason}")
+                else:  # back
+                    retry_count = 0
+                    plan_index = max(0, plan_index - 1)
+                    trace.append(f"Going back to plan step {plan_index + 1}. {reason}")
+
+                execution_step += 1
                 await asyncio.sleep(0.5)
         finally:
             await browser.close()

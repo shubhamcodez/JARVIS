@@ -5,6 +5,7 @@ import {
   getCurrentChatId,
   readChatLog,
   createNewChat,
+  deleteChat,
   sendMessage,
   sendMessageStream,
   sendMessageWithFiles,
@@ -164,6 +165,10 @@ function App() {
     setMessages((prev) => [...prev, { role: isUser ? 'user' : 'assistant', content: text }])
   }
 
+  const appendToolMessage = (toolUsed) => {
+    setMessages((prev) => [...prev, { role: 'tool', content: JSON.stringify(toolUsed) }])
+  }
+
   const handleSend = async () => {
     const raw = input.trim()
     if (!raw && attachments.length === 0) return
@@ -203,12 +208,14 @@ function App() {
         appendMessage(reply, false)
         await appendChatLog('assistant', reply)
       } else {
-        reply = await sendMessageStream(
+        const streamResult = await sendMessageStream(
           raw || 'Please summarize or answer based on the attached documents.',
           null,
           chatId,
           { onChunk: (delta) => setLiveReply((prev) => (prev || '') + delta) }
         )
+        reply = streamResult?.reply ?? streamResult ?? ''
+        if (streamResult?.tool_used) appendToolMessage(streamResult.tool_used)
         appendMessage(reply || '', false)
         await appendChatLog('assistant', reply || '')
       }
@@ -292,17 +299,43 @@ function App() {
                 <p className="chat-history-empty">No conversations yet. Start chatting to see them here.</p>
               ) : (
                 chats.map((chat) => (
-                  <button
+                  <div
                     key={chat.id}
-                    type="button"
-                    className={`chat-history-item ${currentChatId === chat.id ? 'active' : ''}`}
-                    onClick={() => selectChat(chat.id)}
+                    className={`chat-history-item-wrap ${currentChatId === chat.id ? 'active' : ''}`}
                   >
-                    {CHAT_ICON}
-                    <span className="chat-history-title" title={escapeHtml(chat.title)}>
-                      {chat.title}
-                    </span>
-                  </button>
+                    <button
+                      type="button"
+                      className="chat-history-item"
+                      onClick={() => selectChat(chat.id)}
+                    >
+                      {CHAT_ICON}
+                      <span className="chat-history-title" title={escapeHtml(chat.title)}>
+                        {chat.title}
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      className="chat-history-delete"
+                      aria-label="Delete chat"
+                      onClick={async (e) => {
+                        e.stopPropagation()
+                        if (!confirm('Delete this chat?')) return
+                        try {
+                          await deleteChat(chat.id)
+                          if (currentChatId === chat.id) {
+                            setCurrentChatIdState(null)
+                            setMessages([])
+                          }
+                          await refreshChatList()
+                        } catch (err) {
+                          console.error(err)
+                          alert(err?.message || 'Could not delete chat.')
+                        }
+                      }}
+                    >
+                      ×
+                    </button>
+                  </div>
                 ))
               )}
             </div>
@@ -349,9 +382,28 @@ function App() {
         <div className="chat-container">
           <div className="chat-messages">
             {messages.map((msg, i) => (
-              <div key={i} className={`msg ${msg.role === 'user' ? 'msg-user' : 'msg-bot'}`}>
+              <div key={i} className={`msg ${msg.role === 'user' ? 'msg-user' : msg.role === 'tool' ? 'msg-tool' : 'msg-bot'}`}>
                 {msg.role === 'user' ? (
                   <span className="msg-text">{msg.content}</span>
+                ) : msg.role === 'tool' ? (
+                  (() => {
+                    try {
+                      const t = typeof msg.content === 'string' ? JSON.parse(msg.content) : msg.content
+                      const name = t?.name || 'tool'
+                      const input = t?.input ?? ''
+                      const result = t?.result ?? ''
+                      return (
+                        <div className="msg-tool-card">
+                          <span className="msg-tool-label">
+                            🔧 {name}{input ? ` (${input})` : ''}
+                          </span>
+                          <div className="msg-tool-result">{result}</div>
+                        </div>
+                      )
+                    } catch {
+                      return <span className="msg-text">{msg.content}</span>
+                    }
+                  })()
                 ) : (
                   <div className="msg-markdown">
                     <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
