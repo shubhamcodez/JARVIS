@@ -5,12 +5,16 @@ import asyncio
 import queue
 from typing import Optional
 
+import json
+
 from fastapi import FastAPI, File, Form, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from config import get_openai_api_key
-from openai_client import chat as openai_chat, classify_task
+from openai_client import chat as openai_chat, chat_stream
+from agents.supervisor import supervisor_decision
 from chat_log import (
     append_chat_log,
     list_chats,
@@ -19,7 +23,7 @@ from chat_log import (
     read_chat_log,
 )
 from storage import get_chats_storage_path, set_chats_storage_path
-from desktop_agent import run_desktop_agent
+from agents.router import create_router_graph
 
 app = FastAPI(title="JARVIS API")
 app.add_middleware(
@@ -35,15 +39,26 @@ _ws_connections: list[WebSocket] = []
 _SENTINEL = object()
 
 
-def _is_likely_url_task(goal: str) -> bool:
-    g = goal.lower()
-    return (
-        "http://" in g or "https://" in g or ".com" in g or ".org" in g
-        or g.startswith("open http") or g.startswith("navigate to http")
-    )
+# Lazy-compiled router graph (LangGraph)
+_router_graph = None
 
 
-async def _emit_agent_step(step: int, thought: str, action: str, description: str, result: Optional[str], done: bool):
+def _get_router_graph():
+    global _router_graph
+    if _router_graph is None:
+        _router_graph = create_router_graph()
+    return _router_graph
+
+
+async def _emit_agent_step(
+    step: int,
+    thought: str,
+    action: str,
+    description: str,
+    result: Optional[str],
+    done: bool,
+    screenshot: Optional[str] = None,
+):
     payload = {
         "step": step,
         "thought": thought,
@@ -52,6 +67,8 @@ async def _emit_agent_step(step: int, thought: str, action: str, description: st
         "result": result,
         "done": done,
     }
+    if screenshot is not None:
+        payload["screenshot"] = screenshot
     for ws in _ws_connections[:]:
         try:
             await ws.send_json(payload)
@@ -100,8 +117,59 @@ async def chatbot_response(body: ChatbotResponseRequest):
 @app.post("/chat/send-message")
 async def send_message(body: SendMessageRequest):
     """
-    Main entry: classify as task or chat. If task: URL -> browser agent (stub for now),
-    else desktop agent or chat.
+    Main entry: LangGraph router classifies then routes to chat, browser agent, or desktop agent.
+    """
+    api_key = get_openai_api_key()
+    message = (body.message or "").strip()
+    attachment_paths = body.attachment_paths or []
+    chat_id = body.chat_id
+
+    step_queue: queue.Queue = queue.Queue()
+
+    def on_step(step, thought, action, description, result, done, screenshot_base64=None):
+        step_queue.put({
+            "step": step, "thought": thought or "", "action": action or "",
+            "description": description or "", "result": result, "done": done,
+            "screenshot": screenshot_base64,
+        })
+
+    async def drain_steps():
+        loop = asyncio.get_event_loop()
+        while True:
+            try:
+                payload = await loop.run_in_executor(None, step_queue.get)
+            except Exception:
+                break
+            if payload is _SENTINEL:
+                break
+            await _emit_agent_step(
+                payload["step"], payload["thought"], payload["action"],
+                payload["description"], payload.get("result"), payload.get("done", False),
+                payload.get("screenshot"),
+            )
+
+    initial_state = {
+        "message": message,
+        "attachment_paths": attachment_paths,
+        "chat_id": chat_id,
+        "api_key": api_key,
+        "on_step": on_step,
+    }
+    graph = _get_router_graph()
+    drain_task = asyncio.create_task(drain_steps())
+    try:
+        result = await graph.ainvoke(initial_state)
+        reply = result.get("reply") or "No response."
+    finally:
+        step_queue.put(_SENTINEL)
+        await drain_task
+    return {"reply": reply}
+
+
+@app.post("/chat/send-message/stream")
+async def send_message_stream(body: SendMessageRequest):
+    """
+    Streaming variant: classify first; if chat, stream SSE chunks; else run agent and send one final SSE event.
     """
     api_key = get_openai_api_key()
     message = (body.message or "").strip()
@@ -109,54 +177,92 @@ async def send_message(body: SendMessageRequest):
     chat_id = body.chat_id
     has_attachments = len(attachment_paths) > 0
 
-    if not message and has_attachments:
-        reply = await asyncio.to_thread(
-            openai_chat, api_key, "Please summarize or answer based on the attached documents.", attachment_paths
-        )
-        return {"reply": reply}
+    async def _stream_chat_reply(api_key_, msg_, paths_):
+        """Run sync chat_stream in executor and yield SSE as chunks arrive via queue."""
+        chunk_queue = queue.Queue()
+        loop = asyncio.get_event_loop()
 
-    if message:
-        classification = await asyncio.to_thread(classify_task, api_key, message)
-        if classification.get("is_task"):
-            goal = (classification.get("goal") or message).strip()
-            if goal:
-                if _is_likely_url_task(goal):
-                    # Browser agent: placeholder (could add Playwright later)
-                    reply = f"I would run the browser task (goal: {goal}). Browser automation is available when running the full agent stack."
-                    return {"reply": reply}
-                # Desktop agent: run in thread, steps pushed to queue; async task drains and emits via WebSocket
-                step_queue: queue.Queue = queue.Queue()
+        def producer():
+            try:
+                for c in chat_stream(api_key_, msg_, paths_):
+                    chunk_queue.put(c)
+            finally:
+                chunk_queue.put(None)
 
-                def on_step(step, thought, action, description, result, done):
-                    step_queue.put({
-                        "step": step, "thought": thought or "", "action": action or "",
-                        "description": description or "", "result": result, "done": done,
-                    })
+        asyncio.create_task(loop.run_in_executor(None, producer))
+        full = []
+        while True:
+            chunk = await loop.run_in_executor(None, chunk_queue.get)
+            if chunk is None:
+                break
+            full.append(chunk)
+            yield f"data: {json.dumps({'delta': chunk})}\n\n"
+        yield f"data: {json.dumps({'done': True, 'reply': ''.join(full)})}\n\n"
 
-                async def drain_steps():
-                    loop = asyncio.get_event_loop()
-                    while True:
-                        try:
-                            payload = await loop.run_in_executor(None, step_queue.get)
-                        except Exception:
-                            break
-                        if payload is _SENTINEL:
-                            break
-                        await _emit_agent_step(
-                            payload["step"], payload["thought"], payload["action"],
-                            payload["description"], payload.get("result"), payload.get("done", False),
-                        )
+    async def event_stream():
+        # Attachments-only: go straight to chat stream
+        if not message and has_attachments:
+            msg = "Please summarize or answer based on the attached documents."
+            async for line in _stream_chat_reply(api_key, msg, attachment_paths):
+                yield line
+            return
 
-                drain_task = asyncio.create_task(drain_steps())
-                try:
-                    reply = await asyncio.to_thread(run_desktop_agent, goal, 10, on_step)
-                finally:
-                    step_queue.put(_SENTINEL)
-                    await drain_task
-                return {"reply": reply}
+        if not message:
+            async for line in _stream_chat_reply(api_key, "Hello.", None):
+                yield line
+            return
 
-    reply = await asyncio.to_thread(openai_chat, api_key, message or "Hello.", attachment_paths or None)
-    return {"reply": reply}
+        decision = await asyncio.to_thread(supervisor_decision, api_key, message)
+        goal = (decision.get("goal") or message).strip()
+        is_task = decision.get("run_agent") and bool(goal)
+
+        if not is_task:
+            async for line in _stream_chat_reply(api_key, message, attachment_paths or None):
+                yield line
+            return
+
+        # Agent path: run graph then one event
+        step_queue = queue.Queue()
+
+        def on_step(step, thought, action, description, result, done):
+            step_queue.put({
+                "step": step, "thought": thought or "", "action": action or "",
+                "description": description or "", "result": result, "done": done,
+            })
+
+        async def drain_steps():
+            loop = asyncio.get_event_loop()
+            while True:
+                payload = await loop.run_in_executor(None, step_queue.get)
+                if payload is _SENTINEL:
+                    break
+                await _emit_agent_step(
+                    payload["step"], payload["thought"], payload["action"],
+                    payload["description"], payload.get("result"), payload.get("done", False),
+                )
+
+        initial_state = {
+            "message": message,
+            "attachment_paths": attachment_paths,
+            "chat_id": chat_id,
+            "api_key": api_key,
+            "on_step": on_step,
+        }
+        graph = _get_router_graph()
+        drain_task = asyncio.create_task(drain_steps())
+        try:
+            result = await graph.ainvoke(initial_state)
+            reply = result.get("reply") or "No response."
+        finally:
+            step_queue.put(_SENTINEL)
+            await drain_task
+        yield f"data: {json.dumps({'done': True, 'reply': reply})}\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 # --- Chat log ---

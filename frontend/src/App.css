@@ -275,6 +275,53 @@
   white-space: pre-wrap;
 }
 
+.msg-markdown {
+  white-space: normal;
+  word-wrap: break-word;
+  line-height: 1.6;
+}
+.msg-markdown p {
+  margin: 0 0 0.5rem;
+}
+.msg-markdown p:last-child {
+  margin-bottom: 0;
+}
+.msg-markdown ul, .msg-markdown ol {
+  margin: 0.25rem 0 0.5rem;
+  padding-left: 1.25rem;
+}
+.msg-markdown code {
+  background: rgba(0, 0, 0, 0.25);
+  padding: 0.15rem 0.35rem;
+  border-radius: 4px;
+  font-size: 0.9em;
+}
+.msg-markdown pre {
+  margin: 0.5rem 0;
+  padding: 0.75rem;
+  background: rgba(0, 0, 0, 0.3);
+  border-radius: 6px;
+  overflow-x: auto;
+}
+.msg-markdown pre code {
+  background: none;
+  padding: 0;
+}
+.msg-markdown a {
+  color: #58a6ff;
+  text-decoration: none;
+}
+.msg-markdown a:hover {
+  text-decoration: underline;
+}
+.msg-markdown h1, .msg-markdown h2, .msg-markdown h3 {
+  margin: 0.75rem 0 0.35rem;
+  font-weight: 600;
+}
+.msg-markdown h1 { font-size: 1.15rem; }
+.msg-markdown h2 { font-size: 1.05rem; }
+.msg-markdown h3 { font-size: 1rem; }
+
 .agent-thought-process {
   margin-top: 0.5rem;
 }
@@ -294,6 +341,13 @@
 
 .agent-step em {
   color: #8b949e;
+}
+
+.agent-step-supervisor {
+  border-left-color: #9e6a8c;
+}
+.agent-step-supervisor strong {
+  color: #c9a0c9;
 }
 
 .chat-input-area {

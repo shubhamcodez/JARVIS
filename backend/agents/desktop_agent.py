@@ -1,6 +1,5 @@
 """Desktop agent: screenshot + vision model + pyautogui. Optional: only if pyautogui/mss available."""
 import base64
-import io
 from typing import Optional
 
 from config import get_openai_api_key
@@ -61,7 +60,7 @@ def run_desktop_agent(
 ) -> str:
     """
     Run desktop agent loop: screenshot -> vision -> execute -> emit step.
-    on_step(step, thought, action, description, result, done) is called each step.
+    on_step(step, thought, action, description, result, done, screenshot_base64=None) is called each step.
     """
     api_key = get_openai_api_key()
     trace = []
@@ -81,7 +80,7 @@ def run_desktop_agent(
             trace.append("Goal achieved.")
             achieved = True
             if on_step:
-                on_step(step, thought, "done", desc, None, done=True)
+                on_step(step, thought, "done", desc, None, True, screenshot_base64=image_b64)
             break
 
         result = execute_action(action)
@@ -90,7 +89,7 @@ def run_desktop_agent(
             trace.append(f"  → {result}")
 
         if on_step:
-            on_step(step, thought, action.get("action"), desc, last_result, done=False)
+            on_step(step, thought, action.get("action"), desc, last_result, False, screenshot_base64=image_b64)
 
     if not achieved:
         trace.append(f"Stopped after {max_steps} steps (goal not yet achieved).")

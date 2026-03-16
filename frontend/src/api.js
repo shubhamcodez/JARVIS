@@ -33,6 +33,53 @@ export async function sendMessage(message, attachmentPaths = null, chatId = null
   return reply;
 }
 
+/**
+ * Stream send-message: calls onChunk(delta) as tokens arrive, then onDone(fullReply).
+ * Uses SSE endpoint /chat/send-message/stream.
+ */
+export async function sendMessageStream(message, attachmentPaths, chatId, { onChunk, onDone }) {
+  const base = import.meta.env.VITE_API_URL || '/api'
+  const res = await fetch(base + '/chat/send-message/stream', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      message: message || '',
+      attachment_paths: attachmentPaths || null,
+      chat_id: chatId || null,
+    }),
+  })
+  if (!res.ok) throw new Error(await res.text() || `HTTP ${res.status}`)
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  let full = ''
+  while (true) {
+    const { value, done } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    const lines = buffer.split('\n')
+    buffer = lines.pop() || ''
+    for (const line of lines) {
+      if (line.startsWith('data: ')) {
+        try {
+          const data = JSON.parse(line.slice(6))
+          if (data.delta != null) {
+            full += data.delta
+            onChunk?.(data.delta)
+          }
+          if (data.done && data.reply != null) {
+            full = data.reply
+            onDone?.(data.reply)
+            return data.reply
+          }
+        } catch (_) {}
+      }
+    }
+  }
+  if (full) onDone?.(full)
+  return full
+}
+
 /** Send message with file uploads (multipart). Use when user attached files. */
 export async function sendMessageWithFiles(message, files = [], chatId = null) {
   const form = new FormData();

@@ -5,12 +5,15 @@ import {
   getCurrentChatId,
   readChatLog,
   sendMessage,
+  sendMessageStream,
   sendMessageWithFiles,
   appendChatLog,
   getChatsStoragePath,
   setChatsStoragePath,
   agentStepsWsUrl,
 } from './api'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import './App.css'
 
 const CHAT_ICON = (
@@ -161,22 +164,27 @@ function App() {
         chatId = (await getCurrentChatId()) || null
         setCurrentChatIdState(chatId)
       }
-      const reply =
-        filesToSend.length > 0
-          ? await sendMessageWithFiles(
-              raw || 'Please summarize or answer based on the attached documents.',
-              filesToSend,
-              chatId
-            )
-          : await sendMessage(
-              raw || 'Please summarize or answer based on the attached documents.',
-              null,
-              chatId
-            )
+      let reply
+      if (filesToSend.length > 0) {
+        reply = await sendMessageWithFiles(
+          raw || 'Please summarize or answer based on the attached documents.',
+          filesToSend,
+          chatId
+        )
+        appendMessage(reply, false)
+        await appendChatLog('assistant', reply)
+      } else {
+        reply = await sendMessageStream(
+          raw || 'Please summarize or answer based on the attached documents.',
+          null,
+          chatId,
+          { onChunk: (delta) => setLiveReply((prev) => (prev || '') + delta) }
+        )
+        appendMessage(reply || '', false)
+        await appendChatLog('assistant', reply || '')
+      }
       setLiveReply(null)
       setAgentLiveSteps([])
-      appendMessage(reply, false)
-      await appendChatLog('assistant', reply)
     } catch (err) {
       setLiveReply(null)
       setAgentLiveSteps([])
@@ -284,16 +292,24 @@ function App() {
           <div className="chat-messages">
             {messages.map((msg, i) => (
               <div key={i} className={`msg ${msg.role === 'user' ? 'msg-user' : 'msg-bot'}`}>
-                <span className="msg-text">{msg.content}</span>
+                {msg.role === 'user' ? (
+                  <span className="msg-text">{msg.content}</span>
+                ) : (
+                  <div className="msg-markdown">
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
+                  </div>
+                )}
               </div>
             ))}
             {liveReply && (
               <div className="msg msg-bot">
-                <span className="msg-text">{liveReply}</span>
+                <div className="msg-markdown">
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{liveReply}</ReactMarkdown>
+                </div>
                 <div className="agent-thought-process">
                   {agentLiveSteps.map((s, i) => (
-                    <div key={i} className="agent-step">
-                      <strong>Step {s.step}</strong> — {s.thought || ''}
+                    <div key={i} className={`agent-step ${s.step === 0 ? 'agent-step-supervisor' : ''}`}>
+                      <strong>{s.step === 0 ? 'Supervisor' : `Step ${s.step}`}</strong> — {s.thought || ''}
                       <br />
                       <em>Action: {s.description || s.action || ''}</em>
                       {s.result && (

@@ -17,11 +17,18 @@ def _client(api_key: str) -> OpenAI:
 def chat(api_key: str, message: str, attachment_paths: Optional[list[str]] = None) -> str:
     """Chat: text-only or with file uploads (Responses API / Completions)."""
     client = _client(api_key)
-    message = (message or "").strip()
+    user_content = _user_content(message, attachment_paths)
+    resp = client.chat.completions.create(
+        model=CHAT_MODEL,
+        messages=[{"role": "user", "content": user_content}],
+    )
+    return (resp.choices[0].message.content or "No response.").strip()
 
+
+def _user_content(message: str, attachment_paths: Optional[list[str]] = None) -> str:
+    """Build user content string for chat (shared by chat and chat_stream)."""
+    message = (message or "").strip()
     if attachment_paths:
-        # Use files API + chat with file_ids (simplified: we use Completions with file content read as text for now)
-        # Full Responses API with file upload is available in OpenAI; here we do simple text read for attachments
         parts = []
         for path in attachment_paths:
             try:
@@ -35,19 +42,23 @@ def chat(api_key: str, message: str, attachment_paths: Optional[list[str]] = Non
         if parts:
             body = "\n\n".join(parts)
             if message:
-                user_content = f"{message}\n\nAttachments:\n{body}"
-            else:
-                user_content = f"Please summarize or answer based on the attached documents.\n\n{body}"
-        else:
-            user_content = message or "Please summarize or answer based on the attached documents."
-    else:
-        user_content = message or "Hello."
+                return f"{message}\n\nAttachments:\n{body}"
+            return f"Please summarize or answer based on the attached documents.\n\n{body}"
+    return message or "Hello."
 
-    resp = client.chat.completions.create(
+
+def chat_stream(api_key: str, message: str, attachment_paths: Optional[list[str]] = None):
+    """Chat with streaming: yields content chunks (str) as they arrive."""
+    client = _client(api_key)
+    user_content = _user_content(message, attachment_paths)
+    stream = client.chat.completions.create(
         model=CHAT_MODEL,
         messages=[{"role": "user", "content": user_content}],
+        stream=True,
     )
-    return (resp.choices[0].message.content or "No response.").strip()
+    for chunk in stream:
+        if chunk.choices and chunk.choices[0].delta.content:
+            yield chunk.choices[0].delta.content
 
 
 def classify_task(api_key: str, user_message: str) -> dict:
