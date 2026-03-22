@@ -1,13 +1,18 @@
 """xAI Grok API: OpenAI-compatible client (base_url=https://api.x.ai/v1). Same interface as openai_client."""
 import json
+import os
 import re
 from typing import Optional
 
 from openai import OpenAI
 
-# Grok models; override via env XAI_CHAT_MODEL / XAI_VISION_MODEL if needed
-CHAT_MODEL = "grok-2-1212"
-VISION_MODEL = "grok-2-vision-1212"
+# Grok 2 IDs (e.g. grok-2-1212) are retired on the API. Use Grok 4.x IDs from https://docs.x.ai/docs/models
+# Override via env: XAI_CHAT_MODEL, XAI_VISION_MODEL (e.g. grok-4-1-fast-reasoning, grok-4.20-0309-non-reasoning)
+_DEFAULT_CHAT = "grok-4-1-fast-non-reasoning"
+_DEFAULT_VISION = "grok-4-1-fast-non-reasoning"  # same family supports text + image → text
+
+CHAT_MODEL = (os.environ.get("XAI_CHAT_MODEL") or _DEFAULT_CHAT).strip() or _DEFAULT_CHAT
+VISION_MODEL = (os.environ.get("XAI_VISION_MODEL") or _DEFAULT_VISION).strip() or _DEFAULT_VISION
 XAI_BASE_URL = "https://api.x.ai/v1"
 
 

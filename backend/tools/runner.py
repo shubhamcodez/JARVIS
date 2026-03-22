@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from typing import Optional
 
+from .python_sandbox import try_python_sandbox_tool
 from .weather import try_weather_tool
 
 
@@ -25,6 +26,14 @@ def run_tools_for_turn(
     recent_turns = recent_turns or []
     system_blocks: list[str] = []
     tool_used = None
+
+    # Python sandbox: user asked to run fenced ```python``` (pattern models can use)
+    py_tool = try_python_sandbox_tool(message or "")
+    if py_tool:
+        py_block, tool_used = py_tool
+        system_blocks.append(py_block)
+        system_content = "\n\n".join(system_blocks) if system_blocks else ""
+        return system_content, tool_used
 
     # Weather tool: when message is about weather/temperature/forecast
     weather_result = try_weather_tool(message or "", recent_turns=recent_turns)

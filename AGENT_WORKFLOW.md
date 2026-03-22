@@ -25,7 +25,7 @@ The frontend calls **`sendMessageStream`** → **POST `/chat/send-message/stream
 
 2. **Message present**  
    - **Supervisor** is called once: `supervisor_decision(api_key, provider, message)` (sync, in a thread).  
-   - Returns: `run_agent` (bool), `agent` ("browser" | "desktop" | null), `goal`, `reasoning`, `next_steps`.
+   - Returns: `run_agent` (bool), `agent` ("browser" | "desktop" | "coding" | null), `goal`, `reasoning`, `next_steps`.
 
 3. **If `run_agent` is false or no goal**  
    - Backend streams the **chat** reply (same LLM, no agent): `_stream_chat_reply(api_key, message, attachment_paths)` → SSE `delta` chunks, then `{ done: true, reply }`.
@@ -67,6 +67,7 @@ So for the user: either they see **streaming chat text** or **agent steps (and s
      - If `run_agent` is false or goal is empty → **chat**.  
      - Else if agent is **"browser"** → **run_browser**.  
      - Else if agent is **"desktop"** → **run_desktop**.  
+     - Else if agent is **"coding"** → **run_coding**.  
      - Else → **chat**.
 
 4. **Chat node**  
@@ -81,7 +82,11 @@ So for the user: either they see **streaming chat text** or **agent steps (and s
 6. **run_desktop node**  
    - Same as above but **run_desktop_agent(goal, 10, on_step, api_key, provider)** and **route: "run_desktop"** → **END**.
 
-So the **entire agent workflow** for a given message is: **Start → (optional) Supervisor → one of Chat / run_browser / run_desktop → END**. Only one of the three runs per request.
+7. **run_coding node**  
+   - **`_emit_supervisor_step(state)`** then **run_coding_agent(goal, on_step, api_key, provider)** (LLM writes Python → **sandbox** via `tools/python_sandbox.py`).  
+   - Sets **reply**, **route: "run_coding"**, optional **tool_used** (`python_sandbox`) → **END**.
+
+So the **entire agent workflow** for a given message is: **Start → (optional) Supervisor → one of Chat / run_browser / run_desktop / run_coding → END**. Only one of these runs per request.
 
 ---
 
@@ -89,9 +94,10 @@ So the **entire agent workflow** for a given message is: **Start → (optional) 
 
 - **Input:** api_key, provider, user message.  
 - **Model:** Same as chat for that provider (e.g. GPT-4o or Grok).  
-- **System prompt:** Describes three options (chat, browser, desktop) and the exact JSON shape to return.  
+- **System prompt:** Describes four options (chat, browser, desktop, **coding**) and the exact JSON shape to return. **Coding** = run Python in the sandbox (calculations, scripts), **not** desktop GUI automation.  
+- **Heuristic:** Messages that look like “execute Python / factorial / .py script” short-circuit to **coding** before the LLM (avoids misrouting to desktop). If the LLM returns **desktop** but the text still looks programmatic, the supervisor **overrides** to **coding**.  
 - **Output:** `run_agent`, `agent`, `goal`, `reasoning`, `next_steps`.  
-- Used only to **route**; it does not produce the final reply. The actual reply is produced by the **chat** node or the **browser/desktop** agent.
+- Used only to **route**; it does not produce the final reply. The actual reply is produced by the **chat** node or one of the **browser / desktop / coding** agents.
 
 ---
 
@@ -132,12 +138,25 @@ Again, **on_step** is the same callback; the backend sends these steps over the 
 
 ---
 
+## 7b. Coding agent (sandboxed Python)
+
+- **Input:** goal (e.g. “calculate factorial of 10”, “execute a Python script that …”), `on_step`, api_key, provider.  
+- **Flow:**  
+  1. Emit **on_step(0, …)** with a short plan (interpret task → generate code → run in sandbox).  
+  2. **LLM** outputs JSON `{"code": "..."}` using only sandbox-allowed imports (see `backend/PYTHON_SANDBOX.md`).  
+  3. **run_sandboxed_python** in a child process; on failure, one **retry** with the error returned to the LLM.  
+  4. Further **on_step** calls for execute/done; final reply includes stdout; **tool_used** may record `python_sandbox`.  
+- **No GUI** — does not use pyautogui or desktop automation for script tasks.
+
+---
+
 ## 8. Step emission and WebSocket
 
 - **on_step(step, thought, action, description, result, done, screenshot_base64=None)** is passed in state and called by:  
-  - **Supervisor step (0):** emitted by **run_browser** / **run_desktop** via **`_emit_supervisor_step(state)`** (reasoning, next_steps).  
+  - **Supervisor step (0):** emitted by **run_browser** / **run_desktop** / **run_coding** via **`_emit_supervisor_step(state)`** (reasoning, next_steps).  
   - **Browser:** navigate (step 1) then each loop step.  
   - **Desktop:** each loop step.  
+  - **Coding:** plan (0), generate/execute (1), done (2).  
 - Each call pushes a payload to the **step_queue**. The **drain_steps** task (running alongside the graph) calls **`_emit_agent_step(...)`**, which **broadcasts** the payload to every WebSocket client connected to **`/ws/agent-steps`**.  
 - Payload includes: step, thought, action, description, result, done, and optionally **screenshot** (base64). The frontend subscribes to this WebSocket and displays steps and screenshots in the chat UI.
 
@@ -184,7 +203,7 @@ Structured memory so the model can use past chats, docs, and code without fillin
 - **B. Load task state** — Fetch working state for this session/conversation.  
 - **C. Retrieve** — Query understanding → hybrid retrieval (vector + keyword + structural) → rerank → select summaries + raw chunks.  
 - **D. Assemble prompt** — System + current request + task state + retrieved summaries + selected chunks (token budget: e.g. 10% task state, 20% retrieved, 35% raw, 20% response headroom).  
-- **E. Generate** — Existing flow: supervisor → chat | browser | desktop → reply.  
+- **E. Generate** — Existing flow: supervisor → chat | browser | desktop | coding → reply.  
 - **F. Update memory** — Update working state; **write-back** only important turns (decisions, facts, artifacts) into raw store → chunk → summarize → embed → vector + summary stores.
 
 Chunking: **chats** by 1–5 message windows (conversation_id, turn_range, decisions); **docs** by sections/paragraphs with overlap; **code** by file/symbol (no plain-text chunking). See README for full memory design.
@@ -215,7 +234,8 @@ Start drain_steps task (consumes step_queue → _emit_agent_step → WebSocket)
 LangGraph: __start__ → supervisor node → conditional:
         ├─ chat node        → reply + route "chat"        → END
         ├─ run_browser node → _emit_supervisor_step + run_browser_agent → reply + route "run_browser" → END
-        └─ run_desktop node → _emit_supervisor_step + run_desktop_agent → reply + route "run_desktop" → END
+        ├─ run_desktop node → _emit_supervisor_step + run_desktop_agent → reply + route "run_desktop" → END
+        └─ run_coding node  → _emit_supervisor_step + run_coding_agent → reply + route "run_coding" → END
         ↓
 trace_log(provider, route, message, reply, ...)
         ↓

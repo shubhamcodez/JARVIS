@@ -5,11 +5,21 @@ import asyncio
 import queue
 import sys
 import time
+import warnings
 from typing import Optional
 
-# Windows: default event loop must support subprocesses (Playwright browser launch)
-if sys.platform == "win32":
+# Windows: Proactor is required for asyncio subprocesses (Playwright). Since 3.8 the default
+# policy is already Proactor; explicit set_event_loop_policy is deprecated in 3.14+ (removed 3.16).
+if sys.platform == "win32" and sys.version_info < (3, 14):
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+
+# LangChain still imports Pydantic v1 shims; noisy on 3.14 until upstream finishes the migration.
+warnings.filterwarnings(
+    "ignore",
+    message=r"Core Pydantic V1 functionality isn't compatible with Python 3\.14 or greater\.",
+    category=UserWarning,
+    module=r"langchain_core\._api\.deprecation",
+)
 
 import json
 
@@ -34,12 +44,14 @@ from memory.chat_log import (
 from storage import get_chats_storage_path, set_chats_storage_path
 from agents.router import create_router_graph
 from observability.trace import trace_log, list_traces
+from observability.auto_loop import schedule_post_turn_observability
 from observability.eval_gen import generate_evals_from_logs
 from observability.eval_runner import run_evals_for_all_models, pass_at_k
 from observability.evals import load_eval_cases, load_eval_runs
 from observability.optimize import run_optimization_step, get_latest_optimization_stats
 from observability.human_eval import run_human_eval_benchmark
 from tools import get_weather, try_weather_tool
+from tools.python_sandbox import run_sandboxed_python
 
 app = FastAPI(title="JARVIS API")
 app.add_middleware(
@@ -122,6 +134,13 @@ class SetModelRequest(BaseModel):
     provider: str  # "openai" or "xai"
 
 
+class PythonSandboxRequest(BaseModel):
+    """Run Python in an isolated subprocess with restricted builtins (see tools/sandbox_worker.py)."""
+
+    code: str
+    timeout_sec: float = 15.0
+
+
 # --- Chat ---
 @app.post("/chat/response")
 async def chatbot_response(body: ChatbotResponseRequest):
@@ -131,15 +150,39 @@ async def chatbot_response(body: ChatbotResponseRequest):
     client = get_llm_client(provider)
     msg = (body.message or "").strip()
     paths = body.attachment_paths or []
+    trace_msg = msg
     if not msg and paths:
         msg = "Please summarize or answer based on the attached documents."
-    return {"reply": await asyncio.to_thread(client.chat, api_key, msg, paths if paths else None)}
+    t0 = time.perf_counter()
+    try:
+        reply = await asyncio.to_thread(client.chat, api_key, msg, paths if paths else None)
+        trace_log(
+            provider=provider,
+            route="chat",
+            message=trace_msg,
+            reply=reply,
+            success=True,
+            duration_sec=time.perf_counter() - t0,
+        )
+        schedule_post_turn_observability()
+    except Exception as e:
+        trace_log(
+            provider=provider,
+            route="chat",
+            message=trace_msg,
+            reply="",
+            success=False,
+            error=str(e),
+            duration_sec=time.perf_counter() - t0,
+        )
+        raise
+    return {"reply": reply}
 
 
 @app.post("/chat/send-message")
 async def send_message(body: SendMessageRequest):
     """
-    Main entry: LangGraph router classifies then routes to chat, browser agent, or desktop agent.
+    Main entry: LangGraph router classifies then routes to chat, browser, desktop, or coding (sandboxed Python) agent.
     """
     provider = get_llm_provider()
     api_key = get_llm_api_key()
@@ -198,6 +241,7 @@ async def send_message(body: SendMessageRequest):
             success=True,
             duration_sec=time.perf_counter() - start,
         )
+        schedule_post_turn_observability()
     except Exception as e:
         trace_log(
             provider=provider,
@@ -232,11 +276,20 @@ async def send_message_stream(body: SendMessageRequest):
     client = get_llm_client(provider)
 
     async def _stream_chat_reply(
-        api_key_, msg_, paths_, history_=None, system_content_=None, tool_used_=None, chat_id_=None
+        api_key_,
+        msg_,
+        paths_,
+        history_=None,
+        system_content_=None,
+        tool_used_=None,
+        chat_id_=None,
+        provider_=None,
+        trace_user_message_=None,
     ):
         """Run sync chat_stream in executor and yield SSE as chunks arrive. Optional tool_used for final event."""
         chunk_queue = queue.Queue()
         loop = asyncio.get_event_loop()
+        t0 = time.perf_counter()
 
         def producer():
             try:
@@ -244,6 +297,8 @@ async def send_message_stream(body: SendMessageRequest):
                     api_key_, msg_, paths_, history=history_, system_content=system_content_
                 ):
                     chunk_queue.put(c)
+            except Exception as e:
+                chunk_queue.put(e)
             finally:
                 chunk_queue.put(None)
 
@@ -253,9 +308,31 @@ async def send_message_stream(body: SendMessageRequest):
             chunk = await loop.run_in_executor(None, chunk_queue.get)
             if chunk is None:
                 break
+            if isinstance(chunk, Exception):
+                if provider_ is not None and trace_user_message_ is not None:
+                    trace_log(
+                        provider=provider_,
+                        route="chat",
+                        message=trace_user_message_,
+                        reply="",
+                        success=False,
+                        error=str(chunk),
+                        duration_sec=time.perf_counter() - t0,
+                    )
+                raise chunk
             full.append(chunk)
             yield f"data: {json.dumps({'delta': chunk})}\n\n"
         reply = "".join(full)
+        if provider_ is not None and trace_user_message_ is not None:
+            trace_log(
+                provider=provider_,
+                route="chat",
+                message=trace_user_message_,
+                reply=reply,
+                success=True,
+                duration_sec=time.perf_counter() - t0,
+            )
+            schedule_post_turn_observability()
         payload = {"done": True, "reply": reply}
         if tool_used_:
             payload["tool_used"] = tool_used_
@@ -297,7 +374,15 @@ async def send_message_stream(body: SendMessageRequest):
             msg = "Please summarize or answer based on the attached documents."
             hist, sys, tool_used = await asyncio.to_thread(_chat_history_and_system)
             async for line in _stream_chat_reply(
-                api_key, msg, attachment_paths, hist, sys, tool_used, chat_id
+                api_key,
+                msg,
+                attachment_paths,
+                hist,
+                sys,
+                tool_used,
+                chat_id,
+                provider_=provider,
+                trace_user_message_=message,
             ):
                 yield line
             return
@@ -305,7 +390,15 @@ async def send_message_stream(body: SendMessageRequest):
         if not message:
             hist, sys, tool_used = await asyncio.to_thread(_chat_history_and_system)
             async for line in _stream_chat_reply(
-                api_key, "Hello.", None, hist, sys, tool_used, chat_id
+                api_key,
+                "Hello.",
+                None,
+                hist,
+                sys,
+                tool_used,
+                chat_id,
+                provider_=provider,
+                trace_user_message_=message,
             ):
                 yield line
             return
@@ -317,7 +410,15 @@ async def send_message_stream(body: SendMessageRequest):
         if not is_task:
             hist, sys, tool_used = await asyncio.to_thread(_chat_history_and_system)
             async for line in _stream_chat_reply(
-                api_key, message, attachment_paths or None, hist, sys, tool_used, chat_id
+                api_key,
+                message,
+                attachment_paths or None,
+                hist,
+                sys,
+                tool_used,
+                chat_id,
+                provider_=provider,
+                trace_user_message_=message,
             ):
                 yield line
             return
@@ -371,6 +472,7 @@ async def send_message_stream(body: SendMessageRequest):
                 success=True,
                 duration_sec=time.perf_counter() - stream_start,
             )
+            schedule_post_turn_observability()
         except Exception as e:
             trace_log(
                 provider=provider,
@@ -588,6 +690,28 @@ async def api_tools_weather(location: str = Query(..., description="City or plac
     return {"location": location, "result": result}
 
 
+@app.post("/tools/python-sandbox")
+async def api_tools_python_sandbox(body: PythonSandboxRequest):
+    """
+    Execute Python in a sandboxed child process (timeout, restricted imports/builtins).
+    For agents/models: prefer this over exec on the server process.
+    """
+    result = await asyncio.to_thread(run_sandboxed_python, body.code, body.timeout_sec)
+    return result
+
+
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
+
+if __name__ == "__main__":
+    import os
+
+    import uvicorn
+
+    # So imports (config, agents, …) work even if you run from repo root
+    os.chdir(os.path.dirname(os.path.abspath(__file__)))
+    port = int(os.environ.get("PORT", "8000"))
+    reload = os.environ.get("UVICORN_RELOAD", "1").lower() not in ("0", "false", "no")
+    uvicorn.run("main:app", host="127.0.0.1", port=port, reload=reload)

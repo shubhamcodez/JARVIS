@@ -33,10 +33,12 @@ def generate_evals_from_logs(
     num_traces: int = 30,
     num_cases: int = 5,
     provider: Optional[str] = None,
+    meta_source: str = "eval_gen",
 ) -> list[EvalCase]:
     """
     Use recent trace logs to generate new multi-turn eval cases via LLM.
     Returns list of EvalCase appended to store.
+    meta_source: "eval_gen" (manual API) or "eval_gen_auto" (post-turn background).
     """
     provider = provider or get_llm_provider()
     api_key = get_llm_api_key()
@@ -54,7 +56,9 @@ def generate_evals_from_logs(
         })
     user = f"Sample logs (last {len(sample)}):\n{json.dumps(sample, ensure_ascii=False)}\n\nGenerate {num_cases} multi-turn eval cases as a JSON array."
     try:
-        raw = client.chat(api_key, user, attachment_paths=None)
+        raw = client.chat(
+            api_key, user, attachment_paths=None, system_content=SYSTEM
+        )
         # Try to extract JSON array
         raw = (raw or "").strip()
         raw = re.sub(r"^```(?:json)?\s*", "", raw)
@@ -77,7 +81,7 @@ def generate_evals_from_logs(
             messages=messages,
             expected=item.get("expected"),
             rubric=item.get("rubric"),
-            meta={"source": "eval_gen", "provider": provider},
+            meta={"source": meta_source, "provider": provider},
         )
         append_eval_case(case)
         cases.append(case)
@@ -85,4 +89,5 @@ def generate_evals_from_logs(
 
 
 def list_generated_cases(limit: int = 100) -> list[EvalCase]:
-    return [c for c in load_eval_cases(limit=limit) if (c.meta or {}).get("source") == "eval_gen"]
+    src = {"eval_gen", "eval_gen_auto"}
+    return [c for c in load_eval_cases(limit=limit) if (c.meta or {}).get("source") in src]

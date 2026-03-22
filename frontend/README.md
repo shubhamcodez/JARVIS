@@ -1,3 +1,25 @@
+# JARVIS frontend
+
+Dev server proxies `/api` and `/ws` to **`http://localhost:8000`**. If you only run `npm run dev`, Vite will log `ECONNREFUSED` / HTTP 502 until the backend is up.
+
+**Terminal 1 — backend** (from repo root):
+
+```bash
+cd backend
+poetry run uvicorn main:app --reload --port 8000
+```
+
+**Terminal 2 — frontend**:
+
+```bash
+cd frontend
+npm run dev
+```
+
+Then open http://localhost:5173 — `GET http://localhost:8000/health` should return `{"status":"ok"}`.
+
+---
+
 # React + Vite
 
 This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.

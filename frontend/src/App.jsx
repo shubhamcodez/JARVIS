@@ -93,10 +93,14 @@ function App() {
 
   useEffect(() => {
     refreshChatList()
-    getCurrentChatId().then((id) => {
-      setCurrentChatIdState(id)
-      if (id) selectChat(id)
-    })
+    getCurrentChatId()
+      .then((id) => {
+        setCurrentChatIdState(id)
+        if (id) selectChat(id)
+      })
+      .catch(() => {
+        setCurrentChatIdState(null)
+      })
   }, [refreshChatList, selectChat])
 
   useEffect(() => {

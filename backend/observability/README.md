@@ -5,8 +5,30 @@ Each **model** (OpenAI, xAI) is traced and evaluated independently.
 ## Trace logging (automatic)
 
 - Every chat/agent run is logged to `jarvis-observability/traces/trace.jsonl`.
-- Fields: `provider`, `route` (chat | run_browser | run_desktop), `message`, `reply`, `success`, `error`, `duration_sec`, `token_input`, `token_output`.
+- Fields: `provider`, `route` (chat | run_browser | run_desktop | run_coding), `message`, `reply`, `success`, `error`, `duration_sec`, `token_input`, `token_output`.
+- **Streaming chat** (`/chat/send-message/stream` on the chat path) now also writes a trace row when the stream completes.
 - **Success rates, tokens, errors** can be aggregated per model via `GET /observability/traces` or `observability.optimize.aggregate_trace_stats()`.
+
+## Automatic post-turn loop (eval cases + suggestion files)
+
+After each **successful** turn (trace written), the backend schedules **background** work (does not block the HTTP response):
+
+1. **Eval generation** (default **on**): runs the same LLM-based generator as `POST /observability/evals/generate`, using recent traces. New cases are **appended** to `eval_cases.jsonl` with `meta.source = "eval_gen_auto"`. Nothing is executed against your codebase.
+2. **Optimization step** (default **on**): runs `run_optimization_step()` which refreshes `optimization_stats.json` with trace/eval aggregates plus **prompt_modification_instructions** and **code_addition_suggestions** (text only—**no auto-apply**).
+
+**Environment variables** (all optional):
+
+| Variable | Default | Meaning |
+|----------|---------|---------|
+| `JARVIS_AUTO_OBSERVABILITY` | `1` | Master switch for the background task |
+| `JARVIS_AUTO_EVAL_GEN` | `1` | Generate eval cases from logs |
+| `JARVIS_AUTO_EVAL_COOLDOWN_SEC` | `60` | Min seconds between eval generations |
+| `JARVIS_AUTO_EVAL_NUM_TRACES` | `15` | Traces sampled for each auto generation |
+| `JARVIS_AUTO_EVAL_NUM_CASES` | `2` | Max cases appended per run |
+| `JARVIS_AUTO_OPTIMIZATION_SUGGESTIONS` | `1` | Refresh optimization JSON with LLM suggestions |
+| `JARVIS_AUTO_OPT_COOLDOWN_SEC` | `600` | Min seconds between optimization runs (10 min) |
+
+Set any `*_AUTO_*` to `0` / `false` / `off` to disable that piece.
 
 ## Evals (multi-turn, from logs)
 

@@ -8,6 +8,12 @@ async function request(path, options = {}) {
   });
   if (!res.ok) {
     const text = await res.text();
+    // Vite proxy returns 502 when nothing listens on localhost:8000
+    if (res.status === 502) {
+      throw new Error(
+        'Cannot reach the API. Start the backend from the repo: cd backend && poetry run uvicorn main:app --reload --port 8000'
+      );
+    }
     throw new Error(text || `HTTP ${res.status}`);
   }
   return res.json();
