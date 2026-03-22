@@ -380,6 +380,62 @@
   white-space: pre-wrap;
 }
 
+.msg-bot-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  width: 100%;
+  min-width: 0;
+}
+
+.msg-stream-reply-body {
+  margin-top: 0.25rem;
+}
+
+.msg-copy-row {
+  display: flex;
+  align-items: center;
+}
+
+.msg-copy-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.25rem 0.5rem;
+  font-size: 0.6875rem;
+  font-weight: 500;
+  font-family: inherit;
+  color: #8b949e;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+}
+
+.msg-copy-btn:hover:not(:disabled) {
+  color: #58a6ff;
+  border-color: #388bfd66;
+  background: rgba(88, 166, 255, 0.06);
+}
+
+.msg-copy-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.msg-copy-btn--done {
+  color: #3fb950 !important;
+  border-color: #3fb95055 !important;
+}
+
+.msg-copy-icon {
+  width: 12px;
+  height: 12px;
+  flex-shrink: 0;
+  opacity: 0.85;
+}
+
 .msg-markdown {
   white-space: normal;
   word-wrap: break-word;
@@ -521,6 +577,36 @@
   color: #8b949e;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.stream-timeline-screenshot-wrap {
+  margin-top: 0.5rem;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid #30363d;
+  background: #010409;
+  max-width: 100%;
+}
+
+.stream-timeline-screenshot {
+  display: block;
+  width: 100%;
+  max-width: 720px;
+  max-height: 320px;
+  height: auto;
+  object-fit: contain;
+  vertical-align: middle;
+}
+
+.stream-timeline-screenshot-label {
+  display: block;
+  padding: 0.25rem 0.5rem;
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #6e7681;
+  background: #0d1117;
+  border-top: 1px solid #21262d;
 }
 
 .stream-reply-md {

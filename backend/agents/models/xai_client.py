@@ -145,7 +145,7 @@ def vision_desktop_action(
     image_width: Optional[int] = None,
     image_height: Optional[int] = None,
 ) -> dict:
-    """Vision: screenshot + goal -> next action (click/type/scroll/done)."""
+    """Vision: screenshot + goal -> next action (mouse + keyboard via pyautogui)."""
     coord_rule = (
         f"- The screenshot is exactly {image_width}×{image_height} pixels. For clicks, return \"x\" and \"y\" as integer pixel coordinates in this system: x from 0 to {image_width - 1}, y from 0 to {image_height - 1}. (0,0) is top-left. Give the center of the element to click."
         if (image_width and image_height and image_width > 0 and image_height > 0)
@@ -154,17 +154,19 @@ def vision_desktop_action(
     system = """You control the user's desktop by looking at a screenshot and deciding the next mouse/keyboard action.
 
 RULES:
-- Goal is given below. Perform ONE step at a time.
-- On Windows: taskbar is usually at the BOTTOM of the screen. Icons (Chrome, etc.) are on the taskbar. The search bar (Type here to search) is on the taskbar, often left or center.
-- If the app icon (e.g. Chrome) is visible on the taskbar: reply with action "click" and the (x,y) of that icon's center.
-- If the app is NOT on the taskbar: use action "click" to click the taskbar search box first (give its center x,y), then on the next step use action "type" with the app name, then click the search result.
+- Goal text may include a "Current plan step" line as a hint for this turn—but action **"done"** means the **entire user goal** (what they ultimately want, e.g. "open a new tab in Chrome") is **fully** achieved. Do NOT use "done" just because one plan sub-step looks satisfied (e.g. Chrome is already focused when the user still wants a **new tab**).
+- If the overall goal requires a **new browser tab**: after the browser is active, use **hotkey** (Windows/Linux: keys ["ctrl","t"]; macOS: keys ["command","t"]) OR **click** the "+" new-tab control on the tab bar—never skip to "done" until a new tab actually exists or you have sent the hotkey/click.
+- On Windows: taskbar is usually at the BOTTOM. Icons (Chrome, etc.) are on the taskbar.
+- If the target app is NOT in the foreground: click its taskbar icon (click + x,y) or use the taskbar search (click search box, then type, then click result).
 """
     system += coord_rule + """
 
 - Reply with ONLY a JSON object, no markdown or other text. Include "thought": a 1–2 sentence explanation. Format:
-{"action": "click"|"type"|"scroll"|"done", "x": number or null, "y": number or null, "text": string or null, "scroll_amount": number or null, "description": "what you're doing", "thought": "what you see and why you're doing this"}
-- Use "done" when the goal is achieved. For "done", set thought to a brief summary.
-- Use "type" to type text. Use "click" to click at (x,y). Use "scroll" with scroll_amount (positive = scroll down)."""
+{"action": "click"|"double_click"|"right_click"|"type"|"press"|"scroll"|"hotkey"|"done", "x": number or null, "y": number or null, "text": string or null, "key": string or null, "scroll_amount": number or null, "keys": ["ctrl","t"] or null, "description": "what you're doing", "thought": "what you see and why you're doing this"}
+- "press": one key name in "key" (e.g. "enter", "tab", "esc"). Omit x/y unless also clicking.
+- "hotkey": set "keys" to modifiers+key (e.g. ["ctrl","t"], ["command","t"], ["alt","f4"]). Omit x/y.
+- Use "done" ONLY when the **full** user goal is satisfied. For "done", set thought to a brief summary.
+- Prefer **press**/**hotkey** for Enter, shortcuts, and dialogs; use **click** to focus controls first when needed."""
 
     text = f"Goal: {goal}. Step {step}. "
     if last_result:

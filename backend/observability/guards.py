@@ -1,6 +1,6 @@
 """
 Loop corruption mitigation: detect repeated/same action, cap retries, degenerate output.
-Used inside browser/desktop agent loops to break early and avoid runaway.
+Used inside the desktop agent loop to break early and avoid runaway.
 """
 from __future__ import annotations
 

@@ -32,6 +32,56 @@ function escapeHtml(text) {
   return div.innerHTML
 }
 
+const COPY_ICON = (
+  <svg className="msg-copy-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden>
+    <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+  </svg>
+)
+
+function CopyResponseButton({ text }) {
+  const [copied, setCopied] = useState(false)
+  const plain = typeof text === 'string' ? text : String(text ?? '')
+  const handleCopy = async () => {
+    if (!plain.trim()) return
+    try {
+      await navigator.clipboard.writeText(plain)
+      setCopied(true)
+      window.setTimeout(() => setCopied(false), 2000)
+    } catch {
+      try {
+        const ta = document.createElement('textarea')
+        ta.value = plain
+        ta.setAttribute('readonly', '')
+        ta.style.position = 'fixed'
+        ta.style.left = '-9999px'
+        document.body.appendChild(ta)
+        ta.select()
+        document.execCommand('copy')
+        document.body.removeChild(ta)
+        setCopied(true)
+        window.setTimeout(() => setCopied(false), 2000)
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+  return (
+    <div className="msg-copy-row">
+      <button
+        type="button"
+        className={`msg-copy-btn${copied ? ' msg-copy-btn--done' : ''}`}
+        onClick={handleCopy}
+        disabled={!plain.trim()}
+        aria-label={copied ? 'Copied to clipboard' : 'Copy response to clipboard'}
+      >
+        {COPY_ICON}
+        <span>{copied ? 'Copied' : 'Copy'}</span>
+      </button>
+    </div>
+  )
+}
+
 function App() {
   const [panel, setPanel] = useState('chats')
   const [chats, setChats] = useState([])
@@ -44,7 +94,8 @@ function App() {
   const [sending, setSending] = useState(false)
   const [liveReply, setLiveReply] = useState(null)
   const [streamTimeline, setStreamTimeline] = useState([])
-  const [agentLiveSteps, setAgentLiveSteps] = useState([])
+  /** Screenshots arrive on WebSocket; SSE step may arrive first or second — stash by step id */
+  const screenshotPendingRef = useRef({})
   const wsRef = useRef(null)
   const messagesEndRef = useRef(null)
   const fileInputRef = useRef(null)
@@ -110,7 +161,7 @@ function App() {
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages, agentLiveSteps])
+  }, [messages, streamTimeline])
 
   useEffect(() => {
     const url = agentStepsWsUrl()
@@ -118,7 +169,18 @@ function App() {
     ws.onmessage = (e) => {
       try {
         const p = JSON.parse(e.data)
-        setAgentLiveSteps((prev) => [...prev, p])
+        if (p.screenshot == null || p.screenshot === '') return
+        const step = p.step
+        setStreamTimeline((prev) => {
+          const i = prev.findIndex((x) => x.kind === 'step' && x.step === step)
+          if (i >= 0) {
+            const next = [...prev]
+            next[i] = { ...next[i], screenshot: p.screenshot }
+            return next
+          }
+          screenshotPendingRef.current[step] = p.screenshot
+          return prev
+        })
       } catch {}
     }
     ws.onclose = () => {}
@@ -192,7 +254,7 @@ function App() {
     setSending(true)
     setLiveReply('')
     setStreamTimeline([])
-    setAgentLiveSteps([])
+    screenshotPendingRef.current = {}
 
     try {
       await appendChatLog('user', displayText)
@@ -227,12 +289,21 @@ function App() {
               phase: 'plan',
               message: 'Forming a plan',
               detail: desc || thought,
+              step: 0,
+              screenshot: d.screenshot || null,
             }
           }
           let message = `Implementing step ${n}: ${d.action || 'action'}`
           if (retry) message = `Step ${n} failed — trying again`
           const detail = [desc || thought, res ? `→ ${res}` : ''].filter(Boolean).join(' ').slice(0, 600)
-          return { kind: 'step', phase: 'run', message, detail }
+          return {
+            kind: 'step',
+            phase: 'run',
+            message,
+            detail,
+            step: n,
+            screenshot: d.screenshot || null,
+          }
         }
 
         const streamResult = await sendMessageStream(
@@ -258,7 +329,13 @@ function App() {
               ])
             },
             onAgentStep: (d) => {
-              setStreamTimeline((prev) => [...prev, formatAgentStep(d)])
+              const row = formatAgentStep(d)
+              const pending = screenshotPendingRef.current[d.step]
+              if (pending != null) {
+                delete screenshotPendingRef.current[d.step]
+              }
+              const screenshot = d.screenshot || pending || row.screenshot || null
+              setStreamTimeline((prev) => [...prev, { ...row, screenshot }])
             },
           }
         )
@@ -269,11 +346,10 @@ function App() {
       }
       setLiveReply(null)
       setStreamTimeline([])
-      setAgentLiveSteps([])
     } catch (err) {
       setLiveReply(null)
       setStreamTimeline([])
-      setAgentLiveSteps([])
+      screenshotPendingRef.current = {}
       const msg = err?.message || 'Sorry, something went wrong. Please try again.'
       appendMessage(msg, false)
       try {
@@ -455,8 +531,11 @@ function App() {
                     }
                   })()
                 ) : (
-                  <div className="msg-markdown">
-                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
+                  <div className="msg-bot-body">
+                    <div className="msg-markdown">
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
+                    </div>
+                    <CopyResponseButton text={msg.content} />
                   </div>
                 )}
               </div>
@@ -468,7 +547,7 @@ function App() {
                     {streamTimeline.map((item, i) => (
                       <div
                         key={i}
-                        className={`stream-timeline-row stream-timeline-${item.kind} stream-phase-${item.phase || ''}`}
+                        className={`stream-timeline-row stream-timeline-${item.kind} stream-phase-${item.phase || ''}${item.screenshot ? ' stream-timeline-has-screenshot' : ''}`}
                       >
                         <span className="stream-timeline-dot" aria-hidden />
                         <div className="stream-timeline-body">
@@ -476,29 +555,28 @@ function App() {
                           {item.detail ? (
                             <div className="stream-timeline-detail">{item.detail}</div>
                           ) : null}
+                          {item.screenshot ? (
+                            <div className="stream-timeline-screenshot-wrap">
+                              <img
+                                src={`data:image/png;base64,${item.screenshot}`}
+                                alt={`Step ${item.step ?? i} screenshot`}
+                                className="stream-timeline-screenshot"
+                                loading="lazy"
+                              />
+                              <span className="stream-timeline-screenshot-label">Screenshot used for this step</span>
+                            </div>
+                          ) : null}
                         </div>
                       </div>
                     ))}
                   </div>
                 )}
-                {agentLiveSteps.some((s) => s.screenshot) && (
-                  <div className="agent-step-screenshots-strip">
-                    {agentLiveSteps
-                      .filter((s) => s.screenshot)
-                      .map((s, i) => (
-                        <div key={i} className="agent-step-screenshot-wrap">
-                          <img
-                            src={`data:image/png;base64,${s.screenshot}`}
-                            alt={`Step ${s.step} screenshot`}
-                            className="agent-step-screenshot"
-                          />
-                        </div>
-                      ))}
-                  </div>
-                )}
                 {liveReply ? (
-                  <div className="msg-markdown stream-reply-md">
-                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{liveReply}</ReactMarkdown>
+                  <div className="msg-bot-body msg-stream-reply-body">
+                    <div className="msg-markdown stream-reply-md">
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>{liveReply}</ReactMarkdown>
+                    </div>
+                    <CopyResponseButton text={liveReply} />
                   </div>
                 ) : null}
               </div>

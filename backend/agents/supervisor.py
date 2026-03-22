@@ -1,4 +1,4 @@
-"""Supervisor agent: decides whether to run an agent at all, which one (browser/desktop/coding), and the next steps."""
+"""Supervisor agent: decides whether to run an agent at all, which one (desktop/coding/shell/finance), and the next steps."""
 from __future__ import annotations
 
 import json
@@ -11,16 +11,16 @@ from tools.shell_runner import is_shell_enabled
 _SUPERVISOR_SYSTEM = """You are the JARVIS supervisor. You decide how to handle each user message.
 
 You have five options:
-1. **chat** – Answer with conversation only (questions, explanations, summarize, chat). No code execution or computer control.
-2. **browser** – Something in a web browser (open a URL, search the web, navigate a site, fill a form online).
-3. **desktop** – Control the **GUI**: clicking the screen, taskbar, opening apps by clicking, typing into visible windows. Use ONLY for tasks that require seeing or manipulating the desktop UI.
-4. **coding** – Run **Python / computation in the sandbox**: execute a script, calculate factorial or math, algorithms, data transforms, "run this code", `.py` files as a programming task. **NOT** desktop automation (do NOT use desktop to open File Explorer and run python.exe). If the task is programming or calculation, use **coding**, not desktop.
-5. **shell** – Run **real terminal / host shell** commands (mkdir, rm, ls, drives, git, npm, PowerShell, bash). Only when the user wants the **actual machine** shell—not the sandbox. **Requires** the server to have shell tools enabled; if unsure, prefer **chat** to explain.
+1. **chat** – Answer with conversation only (questions, explanations, summarize, chat). No code execution or computer control. Use for web questions, links, "what is X", search-style questions answered in text (there is no separate Playwright browser agent).
+2. **desktop** – Control the **GUI** with the **mouse cursor** and **keyboard**: click, double-click, right-click, type text, press keys (Enter, Tab, arrows, etc.), shortcuts (Ctrl+C, Alt+F4, …)—taskbar, apps, visible browser windows. Use when they need **physical** mouse/keyboard on their display.
+3. **coding** – Run **Python in the sandbox**: math/scripts, **numpy/pandas**, **matplotlib** charts (headless), **yfinance inside code** when needed—regressions, correlations, backtests, simulations, “analyze with Python”. **NOT** desktop automation. Use **finance** (not coding) only for quick fetched data + prose, no custom analysis code.
+4. **shell** – Run **real terminal / host shell** commands (mkdir, rm, ls, drives, git, npm, PowerShell, bash). Only when the user wants the **actual machine** shell—not the sandbox. **Requires** the server to have shell tools enabled; if unsure, prefer **chat** to explain.
+5. **finance** – **Market data + short factual commentary** via **yfinance**: quotes, key stats, P/E, YTD, simple comparisons, dividends, fundamentals—**read out data and explain in prose**. If they want **plots, heavy statistics, or scripted analysis**, use **coding**.
 
 Reply with ONLY a JSON object, no markdown or other text. Use this exact shape:
 {
   "run_agent": true or false,
-  "agent": "browser" or "desktop" or "coding" or "shell" or null,
+  "agent": "desktop" or "coding" or "shell" or "finance" or null,
   "goal": "one clear sentence describing the task" or null,
   "reasoning": "one sentence why you chose this",
   "next_steps": "short list of steps I will take"
@@ -28,11 +28,115 @@ Reply with ONLY a JSON object, no markdown or other text. Use this exact shape:
 
 Rules:
 - Questions, hello, explain, summarize (no action): run_agent false, agent null, goal null.
-- Web/URL/search in browser: run_agent true, agent "browser".
-- **Programming / run Python / script / factorial / calculate with code / execute code**: run_agent true, agent **"coding"** — never "desktop" for these.
+- **Open a website / search Google / use a web app on their machine**: run_agent true, agent **"desktop"** if they need the on-screen browser automated; otherwise **chat** to give URLs, steps, or explanations.
+- **Programming / run Python / script / factorial / calculate with code / execute code / matplotlib / pandas / plot or chart data**: run_agent true, agent **"coding"** — never "desktop" for these.
 - **Terminal / mkdir / rm / list drives / bash / PowerShell / git clone / npm** on the host: run_agent true, agent **"shell"** (not desktop, not coding sandbox).
-- Desktop only when the user clearly needs **mouse/keyboard on their screen** (e.g. "click the Start menu", "open Excel from the taskbar").
+- **Stock price, ticker, P/E, market cap, dividend, simple compare NVDA vs AMD, SPY quote, BTC-USD** (data + explanation, no plots/code): run_agent true, agent **"finance"**. If they ask to **plot, regress, simulate, backtest, correlation matrix, run statistical analysis** on tickers → **"coding"** (not finance).
+- Desktop when the user needs **mouse/keyboard on their screen** (taskbar, apps, visible browser windows).
 - Be decisive. Output only valid JSON."""
+
+
+def _finance_quant_coding_signals(low: str) -> bool:
+    """
+    True when the user wants scripted / quantitative / visual analysis on market data
+    (coding agent), not a prose + yfinance summary (finance agent).
+    """
+    if any(
+        k in low
+        for k in (
+            "matplotlib",
+            "pyplot",
+            "numpy",
+            "pandas",
+            "dataframe",
+            "histogram",
+            "scatter plot",
+            "scatterplot",
+            "regression",
+            "correlation matrix",
+            "linear regression",
+            "logistic regression",
+            "plot ",
+            "chart ",
+            "graph of",
+            "rolling mean",
+            "rolling average",
+            "moving average",
+            "bollinger",
+            "backtest",
+            "monte carlo",
+            "sharpe",
+            "drawdown",
+            "simulate ",
+            "simulation of",
+            "covariance",
+            "heatmap",
+            "volatility of returns",
+            "standard deviation of returns",
+            "ARIMA",
+            "cointegration",
+        )
+    ):
+        return True
+    if "correlation" in low and any(
+        w in low for w in ("stock", "ticker", "equity", "return", "price", "portfolio", "spy", "etf", "nvda", "aapl", "msft")
+    ):
+        return True
+    if "numpy" in low and any(
+        w in low for w in ("stock", "ticker", "return", "price", "portfolio", "yfinance", "equity", "etf")
+    ):
+        return True
+    if "pandas" in low and any(
+        w in low
+        for w in (
+            "stock",
+            "ticker",
+            "return",
+            "price",
+            "portfolio",
+            "yfinance",
+            "equity",
+            "etf",
+            "aapl",
+            "msft",
+            "nvda",
+            "tsla",
+            "spy",
+            "qqq",
+        )
+    ):
+        return True
+    analysis_phrases = (
+        "run an analysis",
+        "run analysis",
+        "do an analysis",
+        "code to analyze",
+        "python to analyze",
+        "analyze with python",
+        "statistical analysis",
+        "quantitative analysis",
+    )
+    if any(p in low for p in analysis_phrases) and any(
+        w in low
+        for w in (
+            "stock",
+            "ticker",
+            "market",
+            "return",
+            "price",
+            "equity",
+            "portfolio",
+            "etf",
+            "spy",
+            "yfinance",
+            "aapl",
+            "msft",
+            "nvda",
+            "tsla",
+        )
+    ):
+        return True
+    return False
 
 
 def _heuristic_coding_task(message: str) -> Optional[dict]:
@@ -49,6 +153,15 @@ def _heuristic_coding_task(message: str) -> Optional[dict]:
     # Browser-y phrases that mention python in URL context
     if "python.org" in low and "open" in low:
         return None
+
+    if _finance_quant_coding_signals(low):
+        return {
+            "run_agent": True,
+            "agent": "coding",
+            "goal": m,
+            "reasoning": "Heuristic: quantitative or visualization analysis (sandbox), not finance prose-only fetch.",
+            "next_steps": "1. Plan analysis 2. Python (numpy/pandas/matplotlib/yfinance) 3. Sandbox run",
+        }
 
     signals: list[tuple[str, bool]] = [
         ("python script", True),
@@ -130,10 +243,70 @@ def _heuristic_shell_task(message: str) -> Optional[dict]:
     return None
 
 
+def _heuristic_finance_task(message: str) -> Optional[dict]:
+    """Route stock/market data questions to the finance agent (yfinance)."""
+    m = (message or "").strip()
+    if not m:
+        return None
+    low = m.lower()
+    if _finance_quant_coding_signals(low):
+        return None
+
+    hints = [
+        "yfinance",
+        "yahoo finance",
+        "stock price",
+        "share price",
+        "market cap",
+        "p/e ratio",
+        "pe ratio",
+        "dividend yield",
+        "ticker",
+        "nasdaq",
+        "nyse",
+        "s&p 500",
+        "s&p500",
+        "etf ",
+        " mutual fund",
+        "earnings",
+        "quarterly revenue",
+        "ytd performance",
+        "52 week high",
+        "52-week",
+        "compare aapl",
+        "btc-usd",
+        "eth-usd",
+        "how is nvda",
+        "how is tsla",
+        "quote for ",
+        "price of ",
+    ]
+    if any(h in low for h in hints):
+        return {
+            "run_agent": True,
+            "agent": "finance",
+            "goal": m,
+            "reasoning": "Heuristic: market/stock data and analysis (yfinance).",
+            "next_steps": "1. Resolve tickers 2. Fetch yfinance 3. Analyze",
+        }
+    # Uppercase ticker + finance-ish words
+    if re.search(r"\b[A-Z]{2,5}\b", m) and any(
+        w in low for w in ("stock", "stocks", "equity", "trading", "invest", "portfolio", "quote", "chart")
+    ):
+        return {
+            "run_agent": True,
+            "agent": "finance",
+            "goal": m,
+            "reasoning": "Heuristic: ticker symbol + investment context.",
+            "next_steps": "1. Resolve tickers 2. Fetch yfinance 3. Analyze",
+        }
+    return None
+
+
 def supervisor_decision(api_key: str, provider: str, user_message: str) -> dict:
     """
-    Ask the supervisor LLM to decide: chat vs browser vs desktop vs coding vs shell agent.
-    Returns dict with: run_agent (bool), agent ("browser"|"desktop"|"coding"|"shell"|null), goal (str|null),
+    Ask the supervisor LLM to decide: chat vs desktop vs coding vs shell vs finance agent.
+    Returns dict with: run_agent (bool), agent ("desktop"|"coding"|"shell"|"finance"|null), goal (str|null),
     reasoning (str), next_steps (str).
     """
     user_message = (user_message or "").strip()
@@ -168,6 +341,17 @@ def supervisor_decision(api_key: str, provider: str, user_message: str) -> dict:
             "next_steps": str(hinted_shell.get("next_steps") or ""),
         }
 
+    hinted_finance = _heuristic_finance_task(user_message)
+    if hinted_finance:
+        g = (hinted_finance.get("goal") or user_message).strip()
+        return {
+            "run_agent": True,
+            "agent": "finance",
+            "goal": g,
+            "reasoning": str(hinted_finance.get("reasoning") or ""),
+            "next_steps": str(hinted_finance.get("next_steps") or ""),
+        }
+
     mod = get_llm_client(provider)
     client = mod._client(api_key)
     model = getattr(mod, "CHAT_MODEL", "gpt-4o")
@@ -196,7 +380,10 @@ def supervisor_decision(api_key: str, provider: str, user_message: str) -> dict:
 
     run_agent = bool(out.get("run_agent"))
     agent = out.get("agent")
-    if agent not in ("browser", "desktop", "coding", "shell"):
+    if agent == "browser":
+        agent = None
+        run_agent = False
+    elif agent not in ("desktop", "coding", "shell", "finance"):
         agent = None
     if agent == "shell" and not is_shell_enabled():
         agent = None
@@ -260,6 +447,10 @@ def supervisor_decision(api_key: str, provider: str, user_message: str) -> dict:
         if shell_reroute:
             agent = "shell"
             reasoning = (reasoning + " " if reasoning else "") + "(Rerouted to shell agent: terminal/filesystem task.)"
+
+    if agent == "finance" and _finance_quant_coding_signals(user_message.lower()):
+        agent = "coding"
+        reasoning = (reasoning + " " if reasoning else "") + "(Rerouted to coding agent: scripted/plotted analysis.)"
 
     return {
         "run_agent": run_agent and agent is not None and bool(goal),

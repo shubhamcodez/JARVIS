@@ -1,4 +1,4 @@
-"""Planning and step-outcome evaluation for browser and desktop agents."""
+"""Planning and step-outcome evaluation for the desktop agent."""
 from __future__ import annotations
 
 import json
@@ -27,7 +27,7 @@ Given the user's goal, output a short, ordered list of concrete steps (3–8 ste
 Output ONLY a JSON array of strings, no markdown or explanation. Example:
 ["Open the target URL", "Locate the search input", "Type the search query", "Click search or press Enter", "Verify results"]
 
-Keep steps high-level but actionable. For browser: navigation, finding elements, typing, clicking, scrolling. For desktop: locating UI, clicking, typing, opening apps."""
+Keep steps high-level but actionable. For desktop: locating UI, clicking, typing, opening apps, **OS shortcuts** (e.g. new browser tab = activate browser then Ctrl+T / Cmd+T or click the + on the tab bar). Do not end the plan with "verify" only—include the actual click or hotkey step."""
 
     user = f"Agent type: {agent_type}\nGoal: {goal.strip()}\n\nReply with ONLY the JSON array of step strings."
 

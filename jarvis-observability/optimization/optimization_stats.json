@@ -1,16 +1,43 @@
 {
   "trace_stats": {
     "openai": {
-      "success_rate": 1.0,
-      "total_runs": 1,
-      "token_input_total": 1,
-      "token_output_total": 5,
-      "error_count": 0,
-      "avg_duration_sec": 0.7528079000039725
+      "success_rate": 0.9166666666666666,
+      "total_runs": 12,
+      "token_input_total": 676,
+      "token_output_total": 25265,
+      "error_count": 1,
+      "avg_duration_sec": 6.286950475000292
     }
   },
   "eval_pass_at_1": {},
   "suggestions": [],
-  "prompt_modification_instructions": [],
-  "code_addition_suggestions": []
+  "prompt_modification_instructions": [
+    {
+      "target": "supervisor",
+      "instruction": "Add: If the user asks to perform a GUI/browser action (for example: open a new tab, click, scroll, type into an app), route to the desktop agent instead of chat unless the user is clearly asking only for instructions.",
+      "reason": "A failed run shows the supervisor/chat path likely mishandled a direct browser-action request."
+    },
+    {
+      "target": "chat",
+      "instruction": "Add: If the user request implies taking action on the user's device or applications, do not answer as plain chat; explicitly state that this requires the desktop or shell route and hand off when available.",
+      "reason": "The error came from a chat-routed request that expected an action, not a conversational reply."
+    }
+  ],
+  "code_addition_suggestions": [
+    {
+      "file": "backend/agents/supervisor.py",
+      "suggestion": "Add an intent-routing rule before LLM dispatch: if the message contains action verbs plus UI targets (e.g. /\\b(open|click|scroll|type|press)\\b/ with terms like tab, browser, window, app, file), force route='desktop'; if it mentions terminal/command/bash, prefer shell.",
+      "reason": "A simple deterministic guard would likely prevent obvious misroutes like 'open a new tab' going to chat."
+    },
+    {
+      "file": "backend/agents/chat_agent.py",
+      "suggestion": "Add a pre-response classifier/guard that detects device-action requests; instead of generating a normal chat reply, return a structured signal such as {\"handoff\":\"desktop\",\"reason\":\"ui_action_requested\"} or a clear fallback message if handoff is unsupported.",
+      "reason": "This reduces silent failures when chat receives an operational request it cannot execute."
+    },
+    {
+      "file": "backend/agents/router_logging.py",
+      "suggestion": "Log selected route, confidence, and a normalized intent label for every run, and flag cases where chat receives imperative UI-action language for review.",
+      "reason": "Current trace data is sparse, and richer routing telemetry is needed to confirm and fix misclassification patterns."
+    }
+  ]
 }

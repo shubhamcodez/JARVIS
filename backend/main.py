@@ -8,7 +8,7 @@ import time
 import warnings
 from typing import Optional
 
-# Windows: Proactor is required for asyncio subprocesses (Playwright). Without it,
+# Windows: Proactor is required for asyncio subprocesses (e.g. shell tools). Without it,
 # SelectorEventLoop is used and create_subprocess_exec raises NotImplementedError.
 # We set the policy on all Windows versions we support; ignore if the API is removed later.
 if sys.platform == "win32":
@@ -158,7 +158,7 @@ class SetModelRequest(BaseModel):
 
 
 class PythonSandboxRequest(BaseModel):
-    """Run Python in an isolated subprocess with restricted builtins (see tools/sandbox_worker.py)."""
+    """Run Python in an isolated subprocess with restricted builtins (see tools/sandbox_worker.py, SANDBOX.md)."""
 
     code: str
     timeout_sec: float = 15.0
@@ -212,7 +212,7 @@ async def chatbot_response(body: ChatbotResponseRequest):
 @app.post("/chat/send-message")
 async def send_message(body: SendMessageRequest):
     """
-    Main entry: LangGraph router classifies then routes to chat, browser, desktop, or coding (sandboxed Python) agent.
+    Main entry: LangGraph router classifies then routes to chat, desktop, coding (sandbox: numpy/pandas/matplotlib/yfinance), shell (opt-in), or finance (yfetch + prose).
     """
     provider = get_llm_provider()
     api_key = get_llm_api_key()
@@ -443,9 +443,10 @@ async def send_message_stream(body: SendMessageRequest):
         is_task = decision.get("run_agent") and bool(goal)
         agent = (decision.get("agent") or "") or None
         route_labels = {
-            "browser": "browser agent",
             "desktop": "desktop agent",
             "coding": "coding agent (sandbox)",
+            "shell": "shell agent (host)",
+            "finance": "finance agent (yfinance)",
         }
         if is_task and agent:
             yield _sse_data(

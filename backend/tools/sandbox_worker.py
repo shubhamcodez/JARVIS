@@ -11,7 +11,8 @@ import json
 import sys
 import traceback
 
-ALLOWED_MODULES = frozenset(
+# Stdlib-safe modules for small scripts
+_CORE_STDLIB = frozenset(
     {
         "math",
         "json",
@@ -27,8 +28,83 @@ ALLOWED_MODULES = frozenset(
         "re",
         "operator",
         "copy",
+        "io",
+        "base64",
+        "csv",
+        "hashlib",
+        "bisect",
+        "heapq",
+        "weakref",
+        "types",
+        "typing",
+        "enum",
+        "warnings",
+        "textwrap",
+        "unicodedata",
+        # Used by requests / urllib3 inside yfinance (HTTP from sandbox).
+        "ssl",
+        "socket",
+        "http",
+        "email",
+        "urllib",
+        "xml",
+        "xmlrpc",
+        "gzip",
+        "zlib",
+        "binascii",
+        "struct",
+        "select",
+        "hmac",
     }
 )
+
+# Coding agent: charts + numeric analysis + market data (same process as yfinance HTTP).
+# Root package names only (_safe_import checks the first segment).
+_DATA_VIZ_FINANCE = frozenset(
+    {
+        "numpy",
+        "pandas",
+        "matplotlib",
+        "mpl_toolkits",
+        "pylab",  # legacy alias; some snippets use it
+        "yfinance",
+        "requests",
+        "urllib3",
+        "idna",
+        "certifi",
+        "charset_normalizer",
+        "dateutil",
+        "bs4",
+        "lxml",
+        "html5lib",
+        "webencodings",
+        "soupsieve",
+        "multitasking",
+        "platformdirs",
+        "pytz",
+        "tzdata",
+        "frozendict",
+        "peewee",
+        "curl_cffi",
+        "cffi",
+        "pycparser",
+        "_cffi_backend",
+        "typing_extensions",
+        "protobuf",
+        "google",
+        "websockets",
+        "kiwisolver",
+        "packaging",
+        "pyparsing",
+        "cycler",
+        "contourpy",
+        "fontTools",
+        "PIL",
+        "zoneinfo",
+    }
+)
+
+ALLOWED_MODULES = _CORE_STDLIB | _DATA_VIZ_FINANCE
 
 SAFE_BUILTINS: dict = {
     "abs": abs,

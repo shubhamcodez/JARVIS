@@ -1,6 +1,6 @@
 # JARVIS Agent Workflow
 
-End-to-end flow from user message to reply: routing, supervisor, browser/desktop agents, **memory** (planned), and **self-improving evals**.
+End-to-end flow from user message to reply: routing, supervisor, desktop/coding/shell/**finance** agents, **memory** (planned), and **self-improving evals**.
 
 ---
 
@@ -25,7 +25,7 @@ The frontend calls **`sendMessageStream`** → **POST `/chat/send-message/stream
 
 2. **Message present**  
    - **Supervisor** is called once: `supervisor_decision(api_key, provider, message)` (sync, in a thread).  
-   - Returns: `run_agent` (bool), `agent` ("browser" | "desktop" | "coding" | "shell" | null), `goal`, `reasoning`, `next_steps`.
+   - Returns: `run_agent` (bool), `agent` ("desktop" | "coding" | "shell" | "finance" | null), `goal`, `reasoning`, `next_steps`.
 
 3. **If `run_agent` is false or no goal**  
    - Backend streams the **chat** reply (same LLM, no agent): `_stream_chat_reply(api_key, message, attachment_paths)` → SSE `delta` chunks, then `{ done: true, reply }`.
@@ -65,34 +65,34 @@ So for the user: either they see **streaming chat text** or **agent steps (and s
 3. **After supervisor**  
    - **Condition:**  
      - If `run_agent` is false or goal is empty → **chat**.  
-     - Else if agent is **"browser"** → **run_browser**.  
      - Else if agent is **"desktop"** → **run_desktop**.  
      - Else if agent is **"coding"** → **run_coding**.  
      - Else if agent is **"shell"** → **run_shell** (host terminal; requires `JARVIS_ENABLE_SHELL=1`).  
+     - Else if agent is **"finance"** → **run_finance** (yfinance + analysis).  
      - Else → **chat**.
 
 4. **Chat node**  
    - Calls `client.chat(api_key, message, paths)` (current provider).  
    - Sets **reply** and **route: "chat"** in state → **END**.
 
-5. **run_browser node**  
-   - Calls **`_emit_supervisor_step(state)`** (emits step 0: reasoning, next_steps) so the UI shows the supervisor plan.  
-   - Runs **run_browser_agent(goal, 10, on_step, headless=False, api_key, provider)**.  
-   - Sets **reply** and **route: "run_browser"** → **END**.
+5. **run_desktop node**  
+   - Calls **`_emit_supervisor_step(state)`**, then **run_desktop_agent(goal, 10, on_step, api_key, provider)**.  
+   - Sets **reply** and **route: "run_desktop"** → **END**.
 
-6. **run_desktop node**  
-   - Same as above but **run_desktop_agent(goal, 10, on_step, api_key, provider)** and **route: "run_desktop"** → **END**.
-
-7. **run_coding node**  
+6. **run_coding node**  
    - **`_emit_supervisor_step(state)`** then **run_coding_agent(goal, on_step, api_key, provider)** (LLM writes Python → **sandbox** via `tools/python_sandbox.py`).  
    - Sets **reply**, **route: "run_coding"**, optional **tool_used** (`python_sandbox`) → **END**.
 
-8. **run_shell node**  
+7. **run_shell node**  
    - **`_emit_supervisor_step(state)`** then **run_shell_agent(goal, on_step, api_key, provider)** (LLM proposes host shell commands → `tools/shell_runner.py`).  
    - Sets **reply**, **route: "run_shell"**, optional **tool_used** (`shell`) → **END**.  
    - **Opt-in:** `JARVIS_ENABLE_SHELL=1`; default cwd `jarvis-shell-work/` (see `backend/SHELL.md`).
 
-So the **entire agent workflow** for a given message is: **Start → (optional) Supervisor → one of Chat / run_browser / run_desktop / run_coding / run_shell → END**. Only one of these runs per request.
+8. **run_finance node**  
+   - **`_emit_supervisor_step(state)`** then **run_finance_agent(goal, on_step, api_key, provider)** (planner LLM → **`tools/finance_data.py`** / yfinance → analyst LLM).  
+   - Sets **reply**, **route: "run_finance"**, optional **tool_used** (`yfinance`). See `backend/FINANCE.md`.
+
+So the **entire agent workflow** for a given message is: **Start → (optional) Supervisor → one of Chat / run_desktop / run_coding / run_shell / run_finance → END**. Only one of these runs per request. There is **no** embedded Playwright browser agent; web tasks on the machine use **desktop** (real Chrome on screen) or **chat** (links and instructions).
 
 ---
 
@@ -100,43 +100,24 @@ So the **entire agent workflow** for a given message is: **Start → (optional) 
 
 - **Input:** api_key, provider, user message.  
 - **Model:** Same as chat for that provider (e.g. GPT-4o or Grok).  
-- **System prompt:** Describes five options (chat, browser, desktop, **coding**, **shell**) and the exact JSON shape to return. **Coding** = Python sandbox; **shell** = real host terminal (mkdir, drives, git, etc.) when `JARVIS_ENABLE_SHELL=1`.  
-- **Heuristic:** “execute Python / factorial / .py script” → **coding** before the LLM. When shell is enabled, phrases like “mkdir”, “powershell”, “list drives”, “git clone” → **shell** before the LLM. If the LLM returns **desktop** but the text still looks programmatic, override to **coding**; if it looks like a terminal/filesystem task, override to **shell**.  
+- **System prompt:** Describes five options (chat, desktop, **coding**, **shell**, **finance**) and the exact JSON shape to return. **Finance** = yfinance + **prose** answers. **Coding** = Python sandbox (numpy/pandas/matplotlib/yfinance for analysis); **shell** = real host terminal when `JARVIS_ENABLE_SHELL=1`. **Desktop** includes automating the **visible** browser (Chrome, etc.) on the user’s screen.  
+- **Heuristic:** “execute Python / factorial / .py script” or **plots / regression / backtest** on tickers → **coding** first. When shell is enabled, terminal/filesystem phrases → **shell**. Other stock/market **data** phrasing → **finance**. If the LLM picks **finance** but the message is **scripted analysis**, override to **coding**. If the LLM returns **desktop** but the text still looks programmatic, override to **coding**; terminal-style → **shell**.  
 - **Output:** `run_agent`, `agent`, `goal`, `reasoning`, `next_steps`.  
-- Used only to **route**; it does not produce the final reply. The actual reply is produced by the **chat** node or one of the **browser / desktop / coding / shell** agents.
+- Used only to **route**; it does not produce the final reply. The actual reply is produced by the **chat** node or one of the **desktop / coding / shell / finance** agents.
 
 ---
 
-## 6. Browser agent (Playwright)
-
-- **Input:** goal (e.g. “open example.com”, “search google for weather”), max_steps (e.g. 10), on_step, api_key, provider.  
-- **URL resolution:** From goal text: explicit URL, or “open example.com”, or “search google for X” → built URL.  
-- **Flow:**  
-  1. Launch Chromium, open the URL.  
-  2. **Step 1:** Emit **on_step(1, "Opened ...", "navigate", ..., screenshot)**.  
-  3. **Loop (step 2..max_steps):**  
-     - Run a **page summary** script in the browser (interactive elements + centerX/centerY for clicks).  
-     - Call **LLM** (current provider) with goal, step, last result, page summary → get **action** (click, type, scroll, done).  
-     - If **done:** emit step and break.  
-     - **Loop guard:** If the same action repeats 3 times → emit “Stopped (repeated action)” and break.  
-     - **Execute:** click by coordinates (from summary) or by selector; type (click + Ctrl+A + type) or fill; scroll.  
-     - Emit **on_step(step, thought, action, description, result, screenshot)**.  
-  4. Return a text summary of the trace (e.g. "Browser task: Opened ... Step 2: ...").  
-
-All **on_step** calls are picked up by the router’s **drain_steps** and sent to the WebSocket as agent steps (with optional screenshots).
-
----
-
-## 7. Desktop agent (screenshot + vision + pyautogui)
+## 6. Desktop agent (screenshot + vision + pyautogui)
 
 - **Input:** goal, max_steps (e.g. 10), on_step, api_key, provider.  
+- **Capabilities:** Drives the **real mouse cursor** and **keyboard** on the user’s machine: **click**, **double_click**, **right_click** (pixel coordinates from the screenshot), **scroll**, **type** (literal text), **press** (single keys: Enter, Tab, Esc, arrows, F-keys, …), **hotkey** (e.g. Ctrl+T, Alt+F4, Win+D).  
 - **Flow:**  
   1. **Loop (step 1..max_steps):**  
      - **Capture screen** (mss) → image + width/height.  
-     - **Vision LLM** (current provider): image + goal + step + last result + image dimensions → JSON **action** (click x,y | type | scroll | done).  
+     - **Vision LLM** (current provider): image + goal + step + last result + image dimensions → JSON **action** (one of the actions above, or **done**).  
      - If **done:** emit step and break.  
-     - **Loop guard:** Same as browser (repeated action 3 times → stop).  
-     - **Execute:** pyautogui.click(x,y), or type, or scroll.  
+     - **Loop guard:** Repeated action 3 times → stop.  
+     - **Execute:** pyautogui (click / doubleClick / rightClick / write / press / hotkey / scroll).  
      - **on_step(step, thought, action, description, result, screenshot)**.  
   2. Return a text summary of the trace.  
 
@@ -144,19 +125,19 @@ Again, **on_step** is the same callback; the backend sends these steps over the 
 
 ---
 
-## 7b. Coding agent (sandboxed Python)
+## 6b. Coding agent (sandboxed Python)
 
-- **Input:** goal (e.g. “calculate factorial of 10”, “execute a Python script that …”), `on_step`, api_key, provider.  
+- **Input:** goal (e.g. “calculate factorial of 10”, “plot AAPL daily returns”, “correlation of MSFT vs SPY”), `on_step`, api_key, provider.  
 - **Flow:**  
   1. Emit **on_step(0, …)** with a short plan (interpret task → generate code → run in sandbox).  
-  2. **LLM** outputs JSON `{"code": "..."}` using only sandbox-allowed imports (see `backend/PYTHON_SANDBOX.md`).  
-  3. **run_sandboxed_python** in a child process; on failure, one **retry** with the error returned to the LLM.  
+  2. **LLM** outputs JSON `{"code": "..."}` using sandbox-allowed imports (stdlib + **numpy, pandas, matplotlib, yfinance**, etc.; see `backend/SANDBOX.md`). **`MPLBACKEND=Agg`** is set for headless matplotlib.  
+  3. **run_sandboxed_python** in a child process (~**45s** timeout for slow network); on failure, one **retry** with the error returned to the LLM.  
   4. Further **on_step** calls for execute/done; final reply includes stdout; **tool_used** may record `python_sandbox`.  
-- **No GUI** — does not use pyautogui or desktop automation for script tasks.
+- **No GUI** — does not use pyautogui or desktop automation for script tasks. For **market data + prose** without custom code, use the **finance** agent instead.
 
 ---
 
-## 7c. Shell agent (host terminal, opt-in)
+## 6c. Shell agent (host terminal, opt-in)
 
 - **Input:** goal (e.g. “mkdir foo”, “list drives”, “run `git status`”), `on_step`, api_key, provider.  
 - **Enable:** `JARVIS_ENABLE_SHELL=1` on the server (see `backend/SHELL.md`).  
@@ -165,28 +146,41 @@ Again, **on_step** is the same callback; the backend sends these steps over the 
 
 ---
 
-## 8. Step emission and WebSocket
+## 6d. Finance agent (yfinance)
+
+- **Input:** goal (e.g. “Compare AAPL and MSFT YTD”, “What’s Tesla’s P/E?”), `on_step`, api_key, provider.  
+- **Dependency:** `yfinance` (see `backend/FINANCE.md`, `backend/MODELS.md`).  
+- **Scope:** **Data + prose** (tables, ratios, comparisons). For **plots / regressions / scripted analysis**, the **coding** agent runs Python in the sandbox (see §6b, `SANDBOX.md`).  
+- **Flow:**  
+  1. **Planner LLM** → JSON: tickers, history period/interval, `include_financials`, restated question.  
+  2. **`fetch_finance_bundle`** → trimmed `info`, optional price history summary + tail table, optional quarterly financials sample.  
+  3. **Analyst LLM** → Markdown answer grounded in the JSON; disclaimer not financial advice.  
+  4. **on_step:** plan (0), fetched (1), done (2); **tool_used** may record `yfinance`.
+
+---
+
+## 7. Step emission and WebSocket
 
 - **on_step(step, thought, action, description, result, done, screenshot_base64=None)** is passed in state and called by:  
-  - **Supervisor step (0):** emitted by **run_browser** / **run_desktop** / **run_coding** / **run_shell** via **`_emit_supervisor_step(state)`** (reasoning, next_steps).  
-  - **Browser:** navigate (step 1) then each loop step.  
+  - **Supervisor step (0):** emitted by **run_desktop** / **run_coding** / **run_shell** / **run_finance** via **`_emit_supervisor_step(state)`** (reasoning, next_steps).  
   - **Desktop:** each loop step.  
   - **Coding:** plan (0), generate/execute (1), done (2).  
   - **Shell:** plan (0), one **on_step** per command, then done.  
+  - **Finance:** plan (0), fetch (1), done (2).  
 - Each call pushes a payload to the **step_queue**. The **drain_steps** task (running alongside the graph) calls **`_emit_agent_step(...)`**, which **broadcasts** the payload to every WebSocket client connected to **`/ws/agent-steps`**.  
 - Payload includes: step, thought, action, description, result, done, and optionally **screenshot** (base64). The frontend subscribes to this WebSocket and displays steps and screenshots in the chat UI.
 
 ---
 
-## 9. Tracing and observability
+## 8. Tracing and observability
 
 - After the graph finishes (both stream and non-stream), the backend calls **trace_log(provider, route, message, reply, success, error, duration_sec, …)**.  
-- **route** is the state’s **route** set by the node that ran (chat, run_browser, run_desktop, run_coding, run_shell).  
+- **route** is the state’s **route** set by the node that ran (chat, run_desktop, run_coding, run_shell, run_finance).  
 - Traces are appended to **jarvis-observability/traces/trace.jsonl** and used later for eval generation and optimization (per-model success rates, tokens, errors).
 
 ---
 
-## 10. Self-improving loop (evals → prompts & code)
+## 9. Self-improving loop (evals → prompts & code)
 
 The agent gets better over time by turning **traces** and **eval results** into concrete changes:
 
@@ -194,7 +188,7 @@ The agent gets better over time by turning **traces** and **eval results** into 
 2. **Generate evals** — POST `/observability/evals/generate`: an LLM turns recent traces into multi-turn eval cases; stored in `jarvis-observability/evals/eval_cases.jsonl`.  
 3. **Run evals** — POST `/observability/evals/run`: each case is run with **both** OpenAI and xAI; optional LLM judge scores replies; results in `eval_runs.jsonl`, pass@1 per model.  
 4. **Optimization** — POST `/observability/optimization/run`: aggregates trace stats + eval pass rates, then calls an LLM to produce:
-   - **prompt_modification_instructions** (target: supervisor | browser | desktop | chat; what to add/change and why),
+   - **prompt_modification_instructions** (target: supervisor | desktop | coding | shell | finance | chat; what to add/change and why),
    - **code_addition_suggestions** (file, suggestion, reason).  
 5. **Apply** — You (or automation) edit prompts/code from those instructions; the next runs and evals reflect the improvement.
 
@@ -202,7 +196,7 @@ So: **traces → evals → scores → optimization → prompt/code suggestions �
 
 ---
 
-## 11. Memory architecture (planned)
+## 10. Memory architecture (planned)
 
 Structured memory so the model can use past chats, docs, and code without filling the whole context.
 
@@ -219,14 +213,14 @@ Structured memory so the model can use past chats, docs, and code without fillin
 - **B. Load task state** — Fetch working state for this session/conversation.  
 - **C. Retrieve** — Query understanding → hybrid retrieval (vector + keyword + structural) → rerank → select summaries + raw chunks.  
 - **D. Assemble prompt** — System + current request + task state + retrieved summaries + selected chunks (token budget: e.g. 10% task state, 20% retrieved, 35% raw, 20% response headroom).  
-- **E. Generate** — Existing flow: supervisor → chat | browser | desktop | coding → reply.  
+- **E. Generate** — Existing flow: supervisor → chat | desktop | coding | shell | finance → reply.  
 - **F. Update memory** — Update working state; **write-back** only important turns (decisions, facts, artifacts) into raw store → chunk → summarize → embed → vector + summary stores.
 
 Chunking: **chats** by 1–5 message windows (conversation_id, turn_range, decisions); **docs** by sections/paragraphs with overlap; **code** by file/symbol (no plain-text chunking). See README for full memory design.
 
 ---
 
-## 12. Summary diagram
+## 11. Summary diagram
 
 **Request/response (current)**
 
@@ -249,9 +243,10 @@ Start drain_steps task (consumes step_queue → _emit_agent_step → WebSocket)
         ↓
 LangGraph: __start__ → supervisor node → conditional:
         ├─ chat node        → reply + route "chat"        → END
-        ├─ run_browser node → _emit_supervisor_step + run_browser_agent → reply + route "run_browser" → END
         ├─ run_desktop node → _emit_supervisor_step + run_desktop_agent → reply + route "run_desktop" → END
-        └─ run_coding node  → _emit_supervisor_step + run_coding_agent → reply + route "run_coding" → END
+        ├─ run_coding node  → _emit_supervisor_step + run_coding_agent → reply + route "run_coding" → END
+        ├─ run_shell node   → _emit_supervisor_step + run_shell_agent → reply + route "run_shell" → END
+        └─ run_finance node → _emit_supervisor_step + run_finance_agent → reply + route "run_finance" → END
         ↓
 trace_log(provider, route, message, reply, ...)
         ↓
@@ -279,8 +274,8 @@ Apply (human or automation)  →  better prompts/code  →  next runs improve
 ```
 Parse request  →  Load task state  →  Retrieve (vector + keyword → rerank)
         →  Assemble prompt (task state + summaries + chunks, token budget)
-        →  Generate (existing supervisor → chat | browser | desktop)
+        →  Generate (existing supervisor → chat | desktop | coding | shell | finance)
         →  Update working state  →  Write-back important turns (chunk → embed → store)
 ```
 
-The **agent workflow** is: one optional supervisor call, then exactly one of **chat** / **browser agent** / **desktop agent**; steps (and screenshots) are streamed over the WebSocket; the final answer is in **reply** and in the trace log. **Evals** use traces to produce prompt/code suggestions. **Memory** (when implemented) wraps each turn with retrieval and write-back for persistence and continuity.
+The **agent workflow** is: one optional supervisor call, then exactly one of **chat** / **desktop** / **coding** / **shell** / **finance**; steps (and screenshots for desktop) are streamed over the WebSocket; the final answer is in **reply** and in the trace log. **Evals** use traces to produce prompt/code suggestions. **Memory** (when implemented) wraps each turn with retrieval and write-back for persistence and continuity.

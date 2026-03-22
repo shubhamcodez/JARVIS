@@ -42,7 +42,7 @@ export async function sendMessage(message, attachmentPaths = null, chatId = null
 /**
  * Stream send-message: calls onChunk(delta) as tokens arrive, then onDone(fullReply).
  * onStatus({ phase, message, ... }) for supervisor / context / agent progress.
- * onAgentStep({ step, thought, action, description, result, done }) for each agent step (SSE; screenshots still via WS).
+ * onAgentStep({ step, thought, action, description, result, done }) for each agent step (SSE omits screenshot; UI merges WS payloads into the same timeline row).
  * If the backend used a tool, calls onToolUsed(toolUsed) and returns { reply, tool_used }.
  */
 export async function sendMessageStream(

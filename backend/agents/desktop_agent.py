@@ -1,5 +1,6 @@
-"""Desktop agent: screenshot + vision model + pyautogui. Optional: only if pyautogui/mss available."""
+"""Desktop agent: screenshot + vision → pyautogui. Controls the real mouse cursor and keyboard (clicks, keys, hotkeys)."""
 import base64
+import sys
 from typing import Optional
 
 from agents.models import get_llm_client
@@ -43,8 +44,22 @@ def capture_screen_with_size() -> tuple[str, int, int]:
     return base64.b64encode(img).decode("ascii"), width, height
 
 
+def _override_premature_done_for_new_tab(goal: str, execution_step: int) -> bool:
+    """Vision often returns done on step 1 when Chrome is focused but no new tab was opened."""
+    if execution_step != 1:
+        return False
+    g = (goal or "").lower()
+    return "new tab" in g or "another tab" in g or "extra tab" in g
+
+
+def _normalize_press_key(key: str) -> str:
+    k = (key or "").strip().lower()
+    aliases = {"return": "enter", "escape": "esc", "del": "delete", "ins": "insert", "pgup": "pageup", "pgdn": "pagedown"}
+    return aliases.get(k, k)
+
+
 def execute_action(action: dict) -> Optional[str]:
-    """Execute one desktop action (click/type/scroll). Returns result message or None."""
+    """Execute one desktop action: mouse (cursor) or keyboard. Returns result message or None."""
     if not HAS_PYAUTOGUI:
         return "pyautogui not installed; skipping execution"
     act = (action.get("action") or "").lower()
@@ -59,14 +74,54 @@ def execute_action(action: dict) -> Optional[str]:
         y = int(round(float(y)))
         pyautogui.click(x, y)
         return f"Clicked at ({x}, {y})"
+    if act == "double_click":
+        x = action.get("x")
+        y = action.get("y")
+        if x is None or y is None:
+            return "double_click requires x and y"
+        x = int(round(float(x)))
+        y = int(round(float(y)))
+        pyautogui.doubleClick(x, y)
+        return f"Double-clicked at ({x}, {y})"
+    if act == "right_click":
+        x = action.get("x")
+        y = action.get("y")
+        if x is None or y is None:
+            return "right_click requires x and y"
+        x = int(round(float(x)))
+        y = int(round(float(y)))
+        pyautogui.rightClick(x, y)
+        return f"Right-clicked at ({x}, {y})"
     if act == "type":
         text = action.get("text") or ""
         pyautogui.write(text, interval=0.02)
         return f"Typed: {text}"
+    if act == "press":
+        key = action.get("key")
+        if key is None or str(key).strip() == "":
+            return "press requires \"key\" (e.g. enter, tab, esc, space, up, down)"
+        nk = _normalize_press_key(str(key))
+        try:
+            pyautogui.press(nk)
+        except Exception as e:
+            return f"press failed for key {nk!r}: {e}"
+        return f"Pressed key: {nk}"
     if act == "scroll":
         amount = action.get("scroll_amount") or 3
         pyautogui.scroll(-amount)  # pyautogui: positive = up
         return f"Scrolled {amount}"
+    if act == "hotkey":
+        keys = action.get("keys")
+        if not isinstance(keys, list) or len(keys) == 0:
+            return "hotkey requires non-empty keys array, e.g. [\"ctrl\",\"t\"]"
+        normalized = []
+        for k in keys:
+            s = str(k).strip().lower()
+            if s in ("cmd", "command", "meta"):
+                s = "command" if sys.platform == "darwin" else "win"
+            normalized.append(s)
+        pyautogui.hotkey(*normalized)
+        return f"Hotkey: {'+'.join(normalized)}"
     return f"Unknown action: {act}"
 
 
@@ -110,7 +165,19 @@ def run_desktop_agent(
     while execution_step <= max_steps:
         image_b64, screen_width, screen_height = capture_screen_with_size()
         current_plan_step = plan[plan_index] if 0 <= plan_index < len(plan) else ""
-        goal_with_plan = f"{goal}\nCurrent plan step ({plan_index + 1}/{len(plan)}): {current_plan_step}"
+        plat = (
+            "Windows"
+            if sys.platform == "win32"
+            else "macOS"
+            if sys.platform == "darwin"
+            else "Linux"
+        )
+        goal_with_plan = (
+            f"Platform: {plat}.\n"
+            f"Overall user goal: {goal}\n"
+            f"Current plan step ({plan_index + 1}/{len(plan)}) — do this next unless the overall goal is already fully done: {current_plan_step}\n"
+            f"Remember: action \"done\" only if the OVERALL user goal is complete (not just this plan line)."
+        )
         action = client.vision_desktop_action(
             api_key, image_b64, goal_with_plan, execution_step, last_result,
             image_width=screen_width, image_height=screen_height,
@@ -121,6 +188,22 @@ def run_desktop_agent(
         act = (action.get("action") or "").lower()
 
         trace.append(f"Step {execution_step} (plan {plan_index + 1}/{len(plan)}) — Thought: {thought}\n  Action: {desc}")
+
+        if act == "done" and _override_premature_done_for_new_tab(goal, execution_step):
+            keys = ["command", "t"] if sys.platform == "darwin" else ["ctrl", "t"]
+            action = {
+                "action": "hotkey",
+                "keys": keys,
+                "thought": "Model returned done too early for a new-tab goal; opening tab via keyboard.",
+                "description": "New tab (Ctrl+T / Cmd+T)",
+            }
+            thought = action["thought"]
+            desc = action["description"]
+            act = "hotkey"
+            trace[-1] = (
+                f"Step {execution_step} (plan {plan_index + 1}/{len(plan)}) — Thought: {thought}\n"
+                f"  Action: {desc} (corrected from premature done)"
+            )
 
         if act == "done":
             trace.append("Goal achieved.")

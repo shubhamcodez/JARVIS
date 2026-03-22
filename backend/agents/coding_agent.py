@@ -10,13 +10,17 @@ from tools.python_sandbox import extract_python_fences, run_sandboxed_python
 
 _CODING_GEN_SYSTEM = """You are JARVIS's coding agent. The user gave a task that should be solved with Python code running in a secure sandbox—not by clicking the desktop.
 
+**Role vs finance agent:** The finance agent fetches market **data** and short factual/market commentary. **You** run **code**: statistics, transforms, simulations, and **plots**. If they want charts, regressions, correlations, backtests, or custom analysis on prices/returns, do it here with numpy/pandas/matplotlib/yfinance as needed.
+
 Output ONLY a JSON object, no markdown fences, with exactly one key:
   "code": "<python source>"
 
 Rules for the code:
-- Allowed imports ONLY: math, json, itertools, functools, collections, statistics, datetime, decimal, fractions, string, random, re, operator, copy.
-- No open(), no file/network/os/sys/subprocess, no input(). Print answers with print().
-- Keep code short and directly solve the task.
+- Allowed imports (stdlib + sandbox): math, json, itertools, functools, collections, statistics, datetime, decimal, fractions, string, random, re, operator, copy, io, base64, csv, hashlib, typing, warnings, plus **numpy**, **pandas**, **matplotlib**, **yfinance** and their usual dependencies (already whitelisted).
+- **Matplotlib:** the sandbox sets a headless backend; still call `import matplotlib; matplotlib.use("Agg")` before `pyplot` if you use plots. Save figures to a buffer and **print base64** or print summary stats — there is no GUI; stdout text is what the user sees.
+- **yfinance:** OK for pulling `Ticker(...).history(...)` or `fast_info` inside your analysis script when the task needs live series.
+- No `open()`, no `os`/`sys`/`subprocess`, no `input()`. Print answers with `print()`.
+- Keep code focused; prefer small readable steps.
 
 Example for "factorial of 10":
 {"code": "import math\\nprint(math.factorial(10))"}
@@ -65,8 +69,8 @@ def run_coding_agent(
 
     plan = (
         "Plan:\n"
-        "  1. Interpret the task as a computation or small program.\n"
-        "  2. Generate Python using only sandbox-allowed imports.\n"
+        "  1. Interpret the task as computation, data analysis, or visualization (sandbox).\n"
+        "  2. Generate Python (stdlib + numpy/pandas/matplotlib/yfinance as needed).\n"
         "  3. Execute in the isolated sandbox and return stdout.\n"
     )
     if on_step:
@@ -115,7 +119,7 @@ def run_coding_agent(
             screenshot_base64=None,
         )
 
-    result = run_sandboxed_python(code)
+    result = run_sandboxed_python(code, timeout_sec=45.0)
     if not result.get("ok"):
         fix_msg = (
             "Your previous code failed in the sandbox. Fix it.\n\n"
@@ -132,7 +136,7 @@ def run_coding_agent(
         code2 = _parse_code_from_llm(raw2)
         if code2:
             code = code2
-            result = run_sandboxed_python(code)
+            result = run_sandboxed_python(code, timeout_sec=45.0)
 
     tool_used = {
         "name": "python_sandbox",

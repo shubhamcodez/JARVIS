@@ -1,4 +1,4 @@
-"""Router graph: supervisor decides route → chat | browser | desktop | coding | shell agent."""
+"""Router graph: supervisor decides route → chat | desktop | coding | shell | finance agent."""
 from __future__ import annotations
 
 import asyncio
@@ -94,18 +94,6 @@ def _emit_supervisor_step(state: RouterState) -> None:
     on_step(0, reasoning, "supervisor", next_steps, None, False)
 
 
-async def _run_browser_node(state: RouterState) -> RouterState:
-    from .browser_agent import run_browser_agent
-
-    _emit_supervisor_step(state)
-    goal = state.get("goal") or ""
-    on_step = state.get("on_step")
-    api_key = state["api_key"]
-    provider = state.get("provider") or "openai"
-    reply = await run_browser_agent(goal, 10, on_step, headless=False, api_key=api_key, provider=provider)
-    return {"reply": reply, "route": "run_browser"}
-
-
 async def _run_desktop_node(state: RouterState) -> RouterState:
     from .desktop_agent import run_desktop_agent
 
@@ -152,6 +140,23 @@ async def _run_shell_node(state: RouterState) -> RouterState:
     return out
 
 
+async def _run_finance_node(state: RouterState) -> RouterState:
+    from .finance_agent import run_finance_agent
+
+    _emit_supervisor_step(state)
+    goal = state.get("goal") or ""
+    on_step = state.get("on_step")
+    api_key = state["api_key"]
+    provider = state.get("provider") or "openai"
+    reply, tool_used = await asyncio.to_thread(
+        run_finance_agent, goal, on_step, api_key, provider
+    )
+    out: RouterState = {"reply": reply, "route": "run_finance"}
+    if tool_used:
+        out["tool_used"] = tool_used
+    return out
+
+
 def _route_after_start(state: RouterState) -> Literal["chat", "supervisor"]:
     message = (state.get("message") or "").strip()
     paths = state.get("attachment_paths") or []
@@ -162,7 +167,7 @@ def _route_after_start(state: RouterState) -> Literal["chat", "supervisor"]:
 
 def _route_after_supervisor(
     state: RouterState,
-) -> Literal["chat", "run_browser", "run_desktop", "run_coding", "run_shell"]:
+) -> Literal["chat", "run_desktop", "run_coding", "run_shell", "run_finance"]:
     decision = state.get("supervisor_decision") or {}
     if not decision.get("run_agent"):
         return "chat"
@@ -170,27 +175,27 @@ def _route_after_supervisor(
     goal = (state.get("goal") or "").strip()
     if not goal:
         return "chat"
-    if agent == "browser":
-        return "run_browser"
     if agent == "desktop":
         return "run_desktop"
     if agent == "coding":
         return "run_coding"
     if agent == "shell":
         return "run_shell"
+    if agent == "finance":
+        return "run_finance"
     return "chat"
 
 
 def create_router_graph():
-    """Build the graph: start → [chat | supervisor] → [chat | browser | desktop | coding | shell] → END."""
+    """Build the graph: start → [chat | supervisor] → [chat | desktop | coding | shell | finance] → END."""
     builder = StateGraph(RouterState)
 
     builder.add_node("supervisor", _supervisor_node)
     builder.add_node("chat", _chat_node)
-    builder.add_node("run_browser", _run_browser_node)
     builder.add_node("run_desktop", _run_desktop_node)
     builder.add_node("run_coding", _run_coding_node)
     builder.add_node("run_shell", _run_shell_node)
+    builder.add_node("run_finance", _run_finance_node)
 
     builder.add_conditional_edges(
         "__start__",
@@ -202,16 +207,16 @@ def create_router_graph():
         _route_after_supervisor,
         path_map={
             "chat": "chat",
-            "run_browser": "run_browser",
             "run_desktop": "run_desktop",
             "run_coding": "run_coding",
             "run_shell": "run_shell",
+            "run_finance": "run_finance",
         },
     )
     builder.add_edge("chat", END)
-    builder.add_edge("run_browser", END)
     builder.add_edge("run_desktop", END)
     builder.add_edge("run_coding", END)
     builder.add_edge("run_shell", END)
+    builder.add_edge("run_finance", END)
 
     return builder.compile()

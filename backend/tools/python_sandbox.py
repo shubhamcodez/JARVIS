@@ -62,6 +62,8 @@ def run_sandboxed_python(code: str, timeout_sec: float = DEFAULT_TIMEOUT_SEC) ->
     env = os.environ.copy()
     env.setdefault("PYTHONIOENCODING", "utf-8")
     env.setdefault("PYTHONUTF8", "1")
+    # Headless charts (matplotlib) in the sandbox — no GUI display required.
+    env.setdefault("MPLBACKEND", "Agg")
     # Reduce accidental import of user site packages in worker
     env.setdefault("PYTHONNOUSERSITE", "1")
 
