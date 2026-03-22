@@ -471,6 +471,74 @@
   object-fit: contain;
 }
 
+.msg-streaming {
+  border: 1px solid #1f2a33;
+  background: linear-gradient(180deg, #0d1117 0%, #0a0a0a 100%);
+}
+
+.stream-timeline {
+  margin-bottom: 0.75rem;
+  padding: 0.5rem 0.25rem 0.5rem 0;
+  border-bottom: 1px solid #1a1a1a;
+  font-size: 0.8125rem;
+}
+
+.stream-timeline-row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: flex-start;
+  margin-bottom: 0.45rem;
+  line-height: 1.35;
+}
+
+.stream-timeline-row:last-child {
+  margin-bottom: 0;
+}
+
+.stream-timeline-dot {
+  flex-shrink: 0;
+  width: 8px;
+  height: 8px;
+  margin-top: 0.35rem;
+  border-radius: 50%;
+  background: #58a6ff;
+  box-shadow: 0 0 0 2px rgba(88, 166, 255, 0.2);
+}
+
+.stream-timeline-step .stream-timeline-dot {
+  background: #3fb950;
+  box-shadow: 0 0 0 2px rgba(63, 185, 80, 0.2);
+}
+
+.stream-timeline-title {
+  font-weight: 600;
+  color: #e6edf3;
+}
+
+.stream-timeline-detail {
+  margin-top: 0.15rem;
+  font-size: 0.75rem;
+  color: #8b949e;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.stream-reply-md {
+  margin-top: 0.35rem;
+}
+
+.agent-step-screenshots-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.agent-step-screenshots-strip .agent-step-screenshot-wrap {
+  max-width: 48%;
+  flex: 1 1 200px;
+}
+
 .chat-input-area {
   border-top: 1px solid #1a1a1a;
   background: #0a0a0a;

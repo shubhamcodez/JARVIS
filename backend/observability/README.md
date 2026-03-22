@@ -5,7 +5,7 @@ Each **model** (OpenAI, xAI) is traced and evaluated independently.
 ## Trace logging (automatic)
 
 - Every chat/agent run is logged to `jarvis-observability/traces/trace.jsonl`.
-- Fields: `provider`, `route` (chat | run_browser | run_desktop | run_coding), `message`, `reply`, `success`, `error`, `duration_sec`, `token_input`, `token_output`.
+- Fields: `provider`, `route` (chat | run_browser | run_desktop | run_coding | run_shell), `message`, `reply`, `success`, `error`, `duration_sec`, `token_input`, `token_output`.
 - **Streaming chat** (`/chat/send-message/stream` on the chat path) now also writes a trace row when the stream completes.
 - **Success rates, tokens, errors** can be aggregated per model via `GET /observability/traces` or `observability.optimize.aggregate_trace_stats()`.
 

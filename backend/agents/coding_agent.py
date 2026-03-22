@@ -5,7 +5,7 @@ import json
 import re
 from typing import Callable, Optional
 
-from agents.models import get_llm_client
+from agents.models import chat_completion_limit_kwargs, get_llm_client, should_omit_temperature
 from tools.python_sandbox import extract_python_fences, run_sandboxed_python
 
 _CODING_GEN_SYSTEM = """You are JARVIS's coding agent. The user gave a task that should be solved with Python code running in a secure sandbox—not by clicking the desktop.
@@ -81,12 +81,14 @@ def run_coding_agent(
         ]
         if follow_ups:
             messages.extend(follow_ups)
-        resp = client.chat.completions.create(
-            model=model,
-            messages=messages,
-            max_tokens=2500,
-            temperature=0.2,
-        )
+        create_kw: dict = {
+            "model": model,
+            "messages": messages,
+            **chat_completion_limit_kwargs(provider, model, 2500),
+        }
+        if not should_omit_temperature(provider, model):
+            create_kw["temperature"] = 0.2
+        resp = client.chat.completions.create(**create_kw)
         return (resp.choices[0].message.content or "").strip()
 
     raw = call_llm()

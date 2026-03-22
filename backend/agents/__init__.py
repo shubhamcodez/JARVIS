@@ -1,4 +1,4 @@
-"""Agents: supervisor, browser, desktop, and router graph (LangGraph)."""
+"""Agents: supervisor, browser, desktop, coding, shell, and router graph (LangGraph)."""
 from .browser_agent import run_browser_agent
 from .desktop_agent import run_desktop_agent
 from .router import create_router_graph

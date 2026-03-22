@@ -11,12 +11,21 @@ def get_llm_client(provider: str):
 
 
 # Re-export for code that imports by name
-from .openai_client import chat, chat_stream, classify_task, vision_desktop_action
+from .openai_client import (
+    chat,
+    chat_stream,
+    chat_completion_limit_kwargs,
+    classify_task,
+    should_omit_temperature,
+    vision_desktop_action,
+)
 
 __all__ = [
     "chat",
     "chat_stream",
+    "chat_completion_limit_kwargs",
     "classify_task",
+    "should_omit_temperature",
     "vision_desktop_action",
     "get_llm_client",
     "openai_client",

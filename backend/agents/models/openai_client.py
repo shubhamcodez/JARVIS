@@ -1,17 +1,58 @@
 """OpenAI API: chat, classification, vision for desktop agent."""
 import json
+import os
 import re
-from typing import Optional
+from typing import Any, Optional
 
 from openai import OpenAI
 
-# Use GPT-4o family; override via env OPENAI_CHAT_MODEL / OPENAI_VISION_MODEL if needed
-CHAT_MODEL = "gpt-4o"
-VISION_MODEL = "gpt-4o"
+# Default to a reasoning-capable model (see https://developers.openai.com/docs/guides/reasoning).
+# Override: OPENAI_CHAT_MODEL, OPENAI_VISION_MODEL (e.g. gpt-5-mini, o4-mini, gpt-4o).
+_DEFAULT_CHAT = "gpt-5.4"
+_DEFAULT_VISION = "gpt-5.4"
+
+CHAT_MODEL = (os.environ.get("OPENAI_CHAT_MODEL") or _DEFAULT_CHAT).strip() or _DEFAULT_CHAT
+VISION_MODEL = (os.environ.get("OPENAI_VISION_MODEL") or _DEFAULT_VISION).strip() or _DEFAULT_VISION
+
+
+def _is_openai_reasoning_family(model: str) -> bool:
+    """Models that use max_completion_tokens (not max_tokens) on Chat Completions."""
+    m = (model or "").lower()
+    return bool(
+        m.startswith("gpt-5")
+        or m.startswith("o1")
+        or m.startswith("o3")
+        or m.startswith("o4")
+    )
+
+
+def chat_completion_limit_kwargs(
+    provider: str,
+    model: str,
+    max_tokens: Optional[int] = None,
+) -> dict[str, Any]:
+    """Map max_tokens → max_completion_tokens for OpenAI reasoning / GPT-5 family."""
+    if max_tokens is None:
+        return {}
+    if (provider or "").lower() == "openai" and _is_openai_reasoning_family(model):
+        return {"max_completion_tokens": max_tokens}
+    return {"max_tokens": max_tokens}
+
+
+def should_omit_temperature(provider: str, model: str) -> bool:
+    """o-series often rejects non-default temperature."""
+    if (provider or "").lower() != "openai":
+        return False
+    m = (model or "").lower()
+    return m.startswith("o1") or m.startswith("o3") or m.startswith("o4")
 
 
 def _client(api_key: str) -> OpenAI:
     return OpenAI(api_key=api_key)
+
+
+def _provider_openai() -> str:
+    return "openai"
 
 
 def _build_messages(
@@ -48,10 +89,7 @@ def chat(
     """Chat: single message or full history. Optional system_content (e.g. memory context)."""
     client = _client(api_key)
     messages = _build_messages(message, attachment_paths, history, system_content)
-    resp = client.chat.completions.create(
-        model=CHAT_MODEL,
-        messages=messages,
-    )
+    resp = client.chat.completions.create(model=CHAT_MODEL, messages=messages)
     return (resp.choices[0].message.content or "No response.").strip()
 
 
@@ -118,6 +156,7 @@ Output ONLY the JSON object, no markdown or explanation."""
             {"role": "system", "content": system},
             {"role": "user", "content": user_message},
         ],
+        **chat_completion_limit_kwargs(_provider_openai(), CHAT_MODEL, 512),
     )
     raw = (resp.choices[0].message.content or "").strip()
     # Strip ```json ... ```
@@ -179,7 +218,7 @@ RULES:
                 ],
             },
         ],
-        max_tokens=500,
+        **chat_completion_limit_kwargs(_provider_openai(), VISION_MODEL, 2048),
     )
     raw = (resp.choices[0].message.content or "").strip()
     raw = re.sub(r"^```(?:json)?\s*", "", raw)

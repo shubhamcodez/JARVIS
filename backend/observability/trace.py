@@ -45,7 +45,7 @@ def trace_log(
     """
     Append one trace record. Called after each chat/agent run.
     provider: "openai" | "xai"
-    route: "chat" | "run_browser" | "run_desktop" | "run_coding" | ...
+    route: "chat" | "run_browser" | "run_desktop" | "run_coding" | "run_shell" | ...
     """
     ensure_dirs()
     path = _trace_path()

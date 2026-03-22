@@ -8,10 +8,14 @@ import time
 import warnings
 from typing import Optional
 
-# Windows: Proactor is required for asyncio subprocesses (Playwright). Since 3.8 the default
-# policy is already Proactor; explicit set_event_loop_policy is deprecated in 3.14+ (removed 3.16).
-if sys.platform == "win32" and sys.version_info < (3, 14):
-    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+# Windows: Proactor is required for asyncio subprocesses (Playwright). Without it,
+# SelectorEventLoop is used and create_subprocess_exec raises NotImplementedError.
+# We set the policy on all Windows versions we support; ignore if the API is removed later.
+if sys.platform == "win32":
+    try:
+        asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+    except AttributeError:
+        pass
 
 # LangChain still imports Pydantic v1 shims; noisy on 3.14 until upstream finishes the migration.
 warnings.filterwarnings(
@@ -52,6 +56,7 @@ from observability.optimize import run_optimization_step, get_latest_optimizatio
 from observability.human_eval import run_human_eval_benchmark
 from tools import get_weather, try_weather_tool
 from tools.python_sandbox import run_sandboxed_python
+from tools.shell_runner import is_shell_enabled, run_shell_command
 
 app = FastAPI(title="JARVIS API")
 app.add_middleware(
@@ -65,6 +70,24 @@ app.add_middleware(
 # WebSocket connections for desktop-agent-step broadcasts
 _ws_connections: list[WebSocket] = []
 _SENTINEL = object()
+
+
+def _sse_data(obj: dict) -> str:
+    """One SSE event line (JSON payload)."""
+    return f"data: {json.dumps(obj, ensure_ascii=False)}\n\n"
+
+
+def _agent_step_for_sse(payload: dict) -> dict:
+    """Omit huge base64 screenshots from SSE JSON (WebSocket still carries them)."""
+    return {
+        "type": "agent_step",
+        "step": payload.get("step"),
+        "thought": (payload.get("thought") or "")[:2000],
+        "action": payload.get("action") or "",
+        "description": (payload.get("description") or "")[:2000],
+        "result": (payload.get("result") or "")[:1500] if payload.get("result") else None,
+        "done": bool(payload.get("done")),
+    }
 
 
 # Lazy-compiled router graph (LangGraph)
@@ -139,6 +162,13 @@ class PythonSandboxRequest(BaseModel):
 
     code: str
     timeout_sec: float = 15.0
+
+
+class ShellRunRequest(BaseModel):
+    """Run one host shell command when JARVIS_ENABLE_SHELL=1 (see tools/shell_runner.py)."""
+
+    command: str
+    timeout_sec: float | None = None
 
 
 # --- Chat ---
@@ -371,8 +401,10 @@ async def send_message_stream(body: SendMessageRequest):
     async def event_stream():
         # Attachments-only: go straight to chat stream
         if not message and has_attachments:
+            yield _sse_data({"type": "status", "phase": "context", "message": "Loading context and attachments…"})
             msg = "Please summarize or answer based on the attached documents."
             hist, sys, tool_used = await asyncio.to_thread(_chat_history_and_system)
+            yield _sse_data({"type": "status", "phase": "stream", "message": "Streaming reply…"})
             async for line in _stream_chat_reply(
                 api_key,
                 msg,
@@ -388,7 +420,9 @@ async def send_message_stream(body: SendMessageRequest):
             return
 
         if not message:
+            yield _sse_data({"type": "status", "phase": "context", "message": "Loading context…"})
             hist, sys, tool_used = await asyncio.to_thread(_chat_history_and_system)
+            yield _sse_data({"type": "status", "phase": "stream", "message": "Streaming reply…"})
             async for line in _stream_chat_reply(
                 api_key,
                 "Hello.",
@@ -403,12 +437,42 @@ async def send_message_stream(body: SendMessageRequest):
                 yield line
             return
 
+        yield _sse_data({"type": "status", "phase": "supervisor", "message": "Running supervisor…"})
         decision = await asyncio.to_thread(supervisor_decision, api_key, provider, message)
         goal = (decision.get("goal") or message).strip()
         is_task = decision.get("run_agent") and bool(goal)
+        agent = (decision.get("agent") or "") or None
+        route_labels = {
+            "browser": "browser agent",
+            "desktop": "desktop agent",
+            "coding": "coding agent (sandbox)",
+        }
+        if is_task and agent:
+            yield _sse_data(
+                {
+                    "type": "status",
+                    "phase": "supervisor_done",
+                    "message": f"Supervisor → running {route_labels.get(agent, agent)}",
+                    "agent": agent,
+                    "goal": goal[:500],
+                    "reasoning": (decision.get("reasoning") or "")[:400],
+                    "next_steps": (decision.get("next_steps") or "")[:800],
+                }
+            )
+        else:
+            yield _sse_data(
+                {
+                    "type": "status",
+                    "phase": "supervisor_done",
+                    "message": "Supervisor → chat (no agent run)",
+                    "agent": None,
+                }
+            )
 
         if not is_task:
+            yield _sse_data({"type": "status", "phase": "context", "message": "Loading memory, tools, and history…"})
             hist, sys, tool_used = await asyncio.to_thread(_chat_history_and_system)
+            yield _sse_data({"type": "status", "phase": "stream", "message": "Streaming reply…"})
             async for line in _stream_chat_reply(
                 api_key,
                 message,
@@ -423,27 +487,29 @@ async def send_message_stream(body: SendMessageRequest):
                 yield line
             return
 
-        # Agent path: run graph then one event
-        step_queue = queue.Queue()
+        # Agent path: stream each step over SSE as it happens (WebSocket still gets full payload + screenshots)
+        yield _sse_data(
+            {
+                "type": "status",
+                "phase": "agent_start",
+                "message": f"Starting {route_labels.get(agent, agent)} — plan & steps will stream here",
+                "agent": agent,
+            }
+        )
+        step_queue: queue.Queue = queue.Queue()
 
         def on_step(step, thought, action, description, result, done, screenshot_base64=None):
-            step_queue.put({
-                "step": step, "thought": thought or "", "action": action or "",
-                "description": description or "", "result": result, "done": done,
-                "screenshot": screenshot_base64,
-            })
-
-        async def drain_steps():
-            loop = asyncio.get_event_loop()
-            while True:
-                payload = await loop.run_in_executor(None, step_queue.get)
-                if payload is _SENTINEL:
-                    break
-                await _emit_agent_step(
-                    payload["step"], payload["thought"], payload["action"],
-                    payload["description"], payload.get("result"), payload.get("done", False),
-                    payload.get("screenshot"),
-                )
+            step_queue.put(
+                {
+                    "step": step,
+                    "thought": thought or "",
+                    "action": action or "",
+                    "description": description or "",
+                    "result": result,
+                    "done": done,
+                    "screenshot": screenshot_base64,
+                }
+            )
 
         initial_state = {
             "message": message,
@@ -454,10 +520,73 @@ async def send_message_stream(body: SendMessageRequest):
             "on_step": on_step,
         }
         graph = _get_router_graph()
-        drain_task = asyncio.create_task(drain_steps())
         stream_start = time.perf_counter()
+        reply = ""
+        route = "chat"
+        tool_used = None
+        graph_task: asyncio.Task | None = None
+
         try:
-            result = await graph.ainvoke(initial_state)
+            graph_task = asyncio.create_task(graph.ainvoke(initial_state))
+
+            while True:
+                step_wait = asyncio.create_task(asyncio.to_thread(step_queue.get))
+                done_set, _ = await asyncio.wait(
+                    {step_wait, graph_task},
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if step_wait in done_set:
+                    payload = step_wait.result()
+                    if payload is _SENTINEL:
+                        await graph_task
+                        break
+                    await _emit_agent_step(
+                        payload["step"],
+                        payload["thought"],
+                        payload["action"],
+                        payload["description"],
+                        payload.get("result"),
+                        payload.get("done", False),
+                        payload.get("screenshot"),
+                    )
+                    yield _sse_data(_agent_step_for_sse(payload))
+                    continue
+
+                step_wait.cancel()
+                try:
+                    await step_wait
+                except asyncio.CancelledError:
+                    pass
+                exc = graph_task.exception()
+                if exc is not None:
+                    try:
+                        step_queue.put_nowait(_SENTINEL)
+                    except Exception:
+                        pass
+                    raise exc
+                # Graph finished: all steps are already on the queue (sentinel is only queued in finally, after this try).
+                while True:
+                    try:
+                        payload = step_queue.get_nowait()
+                    except queue.Empty:
+                        break
+                    if payload is _SENTINEL:
+                        continue
+                    await _emit_agent_step(
+                        payload["step"],
+                        payload["thought"],
+                        payload["action"],
+                        payload["description"],
+                        payload.get("result"),
+                        payload.get("done", False),
+                        payload.get("screenshot"),
+                    )
+                    yield _sse_data(_agent_step_for_sse(payload))
+
+                break
+
+            assert graph_task is not None
+            result = graph_task.result()
             reply = result.get("reply") or "No response."
             route = result.get("route") or "chat"
             tool_used = result.get("tool_used")
@@ -485,8 +614,12 @@ async def send_message_stream(body: SendMessageRequest):
             )
             raise
         finally:
-            step_queue.put(_SENTINEL)
-            await drain_task
+            try:
+                step_queue.put_nowait(_SENTINEL)
+            except Exception:
+                pass
+
+        yield _sse_data({"type": "status", "phase": "done", "message": "Agent finished"})
         payload = {"done": True, "reply": reply}
         if tool_used:
             payload["tool_used"] = tool_used
@@ -697,6 +830,18 @@ async def api_tools_python_sandbox(body: PythonSandboxRequest):
     For agents/models: prefer this over exec on the server process.
     """
     result = await asyncio.to_thread(run_sandboxed_python, body.code, body.timeout_sec)
+    return result
+
+
+@app.post("/tools/shell")
+async def api_tools_shell(body: ShellRunRequest):
+    """
+    Run a single shell command on the host (same backend as the shell agent).
+    Requires JARVIS_ENABLE_SHELL=1. Dangerous — do not expose publicly.
+    """
+    if not is_shell_enabled():
+        return {"ok": False, "error": "Shell disabled (set JARVIS_ENABLE_SHELL=1)."}
+    result = await asyncio.to_thread(run_shell_command, body.command, body.timeout_sec)
     return result
 
 

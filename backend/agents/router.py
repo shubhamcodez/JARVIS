@@ -1,4 +1,4 @@
-"""Router graph: supervisor decides route → chat | browser | desktop | coding agent."""
+"""Router graph: supervisor decides route → chat | browser | desktop | coding | shell agent."""
 from __future__ import annotations
 
 import asyncio
@@ -135,6 +135,23 @@ async def _run_coding_node(state: RouterState) -> RouterState:
     return out
 
 
+async def _run_shell_node(state: RouterState) -> RouterState:
+    from .shell_agent import run_shell_agent
+
+    _emit_supervisor_step(state)
+    goal = state.get("goal") or ""
+    on_step = state.get("on_step")
+    api_key = state["api_key"]
+    provider = state.get("provider") or "openai"
+    reply, tool_used = await asyncio.to_thread(
+        run_shell_agent, goal, on_step, api_key, provider
+    )
+    out: RouterState = {"reply": reply, "route": "run_shell"}
+    if tool_used:
+        out["tool_used"] = tool_used
+    return out
+
+
 def _route_after_start(state: RouterState) -> Literal["chat", "supervisor"]:
     message = (state.get("message") or "").strip()
     paths = state.get("attachment_paths") or []
@@ -145,7 +162,7 @@ def _route_after_start(state: RouterState) -> Literal["chat", "supervisor"]:
 
 def _route_after_supervisor(
     state: RouterState,
-) -> Literal["chat", "run_browser", "run_desktop", "run_coding"]:
+) -> Literal["chat", "run_browser", "run_desktop", "run_coding", "run_shell"]:
     decision = state.get("supervisor_decision") or {}
     if not decision.get("run_agent"):
         return "chat"
@@ -159,11 +176,13 @@ def _route_after_supervisor(
         return "run_desktop"
     if agent == "coding":
         return "run_coding"
+    if agent == "shell":
+        return "run_shell"
     return "chat"
 
 
 def create_router_graph():
-    """Build the graph: start → [chat | supervisor] → [chat | browser | desktop | coding] → END."""
+    """Build the graph: start → [chat | supervisor] → [chat | browser | desktop | coding | shell] → END."""
     builder = StateGraph(RouterState)
 
     builder.add_node("supervisor", _supervisor_node)
@@ -171,6 +190,7 @@ def create_router_graph():
     builder.add_node("run_browser", _run_browser_node)
     builder.add_node("run_desktop", _run_desktop_node)
     builder.add_node("run_coding", _run_coding_node)
+    builder.add_node("run_shell", _run_shell_node)
 
     builder.add_conditional_edges(
         "__start__",
@@ -185,11 +205,13 @@ def create_router_graph():
             "run_browser": "run_browser",
             "run_desktop": "run_desktop",
             "run_coding": "run_coding",
+            "run_shell": "run_shell",
         },
     )
     builder.add_edge("chat", END)
     builder.add_edge("run_browser", END)
     builder.add_edge("run_desktop", END)
     builder.add_edge("run_coding", END)
+    builder.add_edge("run_shell", END)
 
     return builder.compile()

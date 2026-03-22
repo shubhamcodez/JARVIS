@@ -5,7 +5,7 @@ import json
 import re
 from typing import Literal
 
-from agents.models import get_llm_client
+from agents.models import chat_completion_limit_kwargs, get_llm_client
 
 
 def get_plan(
@@ -40,7 +40,7 @@ Keep steps high-level but actionable. For browser: navigation, finding elements,
             {"role": "system", "content": system},
             {"role": "user", "content": user},
         ],
-        max_tokens=400,
+        **chat_completion_limit_kwargs(provider, model, 400),
     )
     raw = (resp.choices[0].message.content or "").strip()
     raw = re.sub(r"^```(?:json)?\s*", "", raw)
@@ -100,7 +100,7 @@ Rules:
             {"role": "system", "content": system},
             {"role": "user", "content": user},
         ],
-        max_tokens=150,
+        **chat_completion_limit_kwargs(provider, model, 150),
     )
     raw = (resp.choices[0].message.content or "").strip()
     raw = re.sub(r"^```(?:json)?\s*", "", raw)

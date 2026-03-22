@@ -41,10 +41,16 @@ export async function sendMessage(message, attachmentPaths = null, chatId = null
 
 /**
  * Stream send-message: calls onChunk(delta) as tokens arrive, then onDone(fullReply).
+ * onStatus({ phase, message, ... }) for supervisor / context / agent progress.
+ * onAgentStep({ step, thought, action, description, result, done }) for each agent step (SSE; screenshots still via WS).
  * If the backend used a tool, calls onToolUsed(toolUsed) and returns { reply, tool_used }.
- * Uses SSE endpoint /chat/send-message/stream.
  */
-export async function sendMessageStream(message, attachmentPaths, chatId, { onChunk, onDone, onToolUsed }) {
+export async function sendMessageStream(
+  message,
+  attachmentPaths,
+  chatId,
+  { onChunk, onDone, onToolUsed, onStatus, onAgentStep }
+) {
   const base = import.meta.env.VITE_API_URL || '/api'
   const res = await fetch(base + '/chat/send-message/stream', {
     method: 'POST',
@@ -71,6 +77,14 @@ export async function sendMessageStream(message, attachmentPaths, chatId, { onCh
       if (line.startsWith('data: ')) {
         try {
           const data = JSON.parse(line.slice(6))
+          if (data.type === 'status') {
+            onStatus?.(data)
+            continue
+          }
+          if (data.type === 'agent_step') {
+            onAgentStep?.(data)
+            continue
+          }
           if (data.delta != null) {
             full += data.delta
             onChunk?.(data.delta)

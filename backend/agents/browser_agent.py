@@ -7,7 +7,7 @@ import json
 import re
 from typing import Optional
 
-from agents.models import get_llm_client
+from agents.models import chat_completion_limit_kwargs, get_llm_client
 from observability.guards import should_stop_streak
 
 # Max steps per browser session
@@ -101,7 +101,7 @@ Use the "items" array indexes (field "i") to refer to elements. Prefer clicking 
             {"role": "system", "content": system},
             {"role": "user", "content": user},
         ],
-        max_tokens=300,
+        **chat_completion_limit_kwargs(provider, model, 300),
     )
     raw = (resp.choices[0].message.content or "").strip()
     raw = re.sub(r"^```(?:json)?\s*", "", raw)

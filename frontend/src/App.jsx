@@ -43,6 +43,7 @@ function App() {
   const [modelProvider, setModelProvider] = useState('openai')
   const [sending, setSending] = useState(false)
   const [liveReply, setLiveReply] = useState(null)
+  const [streamTimeline, setStreamTimeline] = useState([])
   const [agentLiveSteps, setAgentLiveSteps] = useState([])
   const wsRef = useRef(null)
   const messagesEndRef = useRef(null)
@@ -189,7 +190,8 @@ function App() {
           : '')
     appendMessage(displayText, true)
     setSending(true)
-    setLiveReply('Working on it…')
+    setLiveReply('')
+    setStreamTimeline([])
     setAgentLiveSteps([])
 
     try {
@@ -212,11 +214,53 @@ function App() {
         appendMessage(reply, false)
         await appendChatLog('assistant', reply)
       } else {
+        const formatAgentStep = (d) => {
+          const n = d.step
+          const thought = (d.thought || '').trim()
+          const desc = (d.description || '').trim()
+          const res = d.result != null ? String(d.result).trim() : ''
+          const lower = `${desc} ${thought}`.toLowerCase()
+          const retry = lower.includes('retry') || lower.includes('trying again')
+          if (n === 0) {
+            return {
+              kind: 'step',
+              phase: 'plan',
+              message: 'Forming a plan',
+              detail: desc || thought,
+            }
+          }
+          let message = `Implementing step ${n}: ${d.action || 'action'}`
+          if (retry) message = `Step ${n} failed — trying again`
+          const detail = [desc || thought, res ? `→ ${res}` : ''].filter(Boolean).join(' ').slice(0, 600)
+          return { kind: 'step', phase: 'run', message, detail }
+        }
+
         const streamResult = await sendMessageStream(
           raw || 'Please summarize or answer based on the attached documents.',
           null,
           chatId,
-          { onChunk: (delta) => setLiveReply((prev) => (prev || '') + delta) }
+          {
+            onChunk: (delta) => setLiveReply((prev) => (prev || '') + delta),
+            onStatus: (d) => {
+              if (d.phase === 'done') return
+              setStreamTimeline((prev) => [
+                ...prev,
+                {
+                  kind: 'status',
+                  phase: d.phase,
+                  message: d.message || d.phase,
+                  detail:
+                    d.next_steps ||
+                    d.reasoning ||
+                    (d.goal && d.phase === 'supervisor_done' ? `Goal: ${d.goal}` : '') ||
+                    '',
+                },
+              ])
+            },
+            onAgentStep: (d) => {
+              setStreamTimeline((prev) => [...prev, formatAgentStep(d)])
+            },
+          }
         )
         reply = streamResult?.reply ?? streamResult ?? ''
         if (streamResult?.tool_used) appendToolMessage(streamResult.tool_used)
@@ -224,9 +268,11 @@ function App() {
         await appendChatLog('assistant', reply || '')
       }
       setLiveReply(null)
+      setStreamTimeline([])
       setAgentLiveSteps([])
     } catch (err) {
       setLiveReply(null)
+      setStreamTimeline([])
       setAgentLiveSteps([])
       const msg = err?.message || 'Sorry, something went wrong. Please try again.'
       appendMessage(msg, false)
@@ -415,34 +461,46 @@ function App() {
                 )}
               </div>
             ))}
-            {liveReply && (
-              <div className="msg msg-bot">
-                <div className="msg-markdown">
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{liveReply}</ReactMarkdown>
-                </div>
-                <div className="agent-thought-process">
-                  {agentLiveSteps.map((s, i) => (
-                    <div key={i} className={`agent-step ${s.step === 0 ? 'agent-step-supervisor' : ''}`}>
-                      <strong>{s.step === 0 ? 'Supervisor' : `Step ${s.step}`}</strong> — {s.thought || ''}
-                      <br />
-                      <em>Action: {s.description || s.action || ''}</em>
-                      {s.result && (
-                        <>
-                          <br />→ {s.result}
-                        </>
-                      )}
-                      {s.screenshot && (
-                        <div className="agent-step-screenshot-wrap">
+            {(sending || liveReply || streamTimeline.length > 0) && (
+              <div className="msg msg-bot msg-streaming">
+                {streamTimeline.length > 0 && (
+                  <div className="stream-timeline" aria-live="polite">
+                    {streamTimeline.map((item, i) => (
+                      <div
+                        key={i}
+                        className={`stream-timeline-row stream-timeline-${item.kind} stream-phase-${item.phase || ''}`}
+                      >
+                        <span className="stream-timeline-dot" aria-hidden />
+                        <div className="stream-timeline-body">
+                          <div className="stream-timeline-title">{item.message}</div>
+                          {item.detail ? (
+                            <div className="stream-timeline-detail">{item.detail}</div>
+                          ) : null}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {agentLiveSteps.some((s) => s.screenshot) && (
+                  <div className="agent-step-screenshots-strip">
+                    {agentLiveSteps
+                      .filter((s) => s.screenshot)
+                      .map((s, i) => (
+                        <div key={i} className="agent-step-screenshot-wrap">
                           <img
                             src={`data:image/png;base64,${s.screenshot}`}
                             alt={`Step ${s.step} screenshot`}
                             className="agent-step-screenshot"
                           />
                         </div>
-                      )}
-                    </div>
-                  ))}
-                </div>
+                      ))}
+                  </div>
+                )}
+                {liveReply ? (
+                  <div className="msg-markdown stream-reply-md">
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{liveReply}</ReactMarkdown>
+                  </div>
+                ) : null}
               </div>
             )}
             <div ref={messagesEndRef} />

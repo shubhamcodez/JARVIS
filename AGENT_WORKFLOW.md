@@ -25,7 +25,7 @@ The frontend calls **`sendMessageStream`** → **POST `/chat/send-message/stream
 
 2. **Message present**  
    - **Supervisor** is called once: `supervisor_decision(api_key, provider, message)` (sync, in a thread).  
-   - Returns: `run_agent` (bool), `agent` ("browser" | "desktop" | "coding" | null), `goal`, `reasoning`, `next_steps`.
+   - Returns: `run_agent` (bool), `agent` ("browser" | "desktop" | "coding" | "shell" | null), `goal`, `reasoning`, `next_steps`.
 
 3. **If `run_agent` is false or no goal**  
    - Backend streams the **chat** reply (same LLM, no agent): `_stream_chat_reply(api_key, message, attachment_paths)` → SSE `delta` chunks, then `{ done: true, reply }`.
@@ -68,6 +68,7 @@ So for the user: either they see **streaming chat text** or **agent steps (and s
      - Else if agent is **"browser"** → **run_browser**.  
      - Else if agent is **"desktop"** → **run_desktop**.  
      - Else if agent is **"coding"** → **run_coding**.  
+     - Else if agent is **"shell"** → **run_shell** (host terminal; requires `JARVIS_ENABLE_SHELL=1`).  
      - Else → **chat**.
 
 4. **Chat node**  
@@ -86,7 +87,12 @@ So for the user: either they see **streaming chat text** or **agent steps (and s
    - **`_emit_supervisor_step(state)`** then **run_coding_agent(goal, on_step, api_key, provider)** (LLM writes Python → **sandbox** via `tools/python_sandbox.py`).  
    - Sets **reply**, **route: "run_coding"**, optional **tool_used** (`python_sandbox`) → **END**.
 
-So the **entire agent workflow** for a given message is: **Start → (optional) Supervisor → one of Chat / run_browser / run_desktop / run_coding → END**. Only one of these runs per request.
+8. **run_shell node**  
+   - **`_emit_supervisor_step(state)`** then **run_shell_agent(goal, on_step, api_key, provider)** (LLM proposes host shell commands → `tools/shell_runner.py`).  
+   - Sets **reply**, **route: "run_shell"**, optional **tool_used** (`shell`) → **END**.  
+   - **Opt-in:** `JARVIS_ENABLE_SHELL=1`; default cwd `jarvis-shell-work/` (see `backend/SHELL.md`).
+
+So the **entire agent workflow** for a given message is: **Start → (optional) Supervisor → one of Chat / run_browser / run_desktop / run_coding / run_shell → END**. Only one of these runs per request.
 
 ---
 
@@ -94,10 +100,10 @@ So the **entire agent workflow** for a given message is: **Start → (optional) 
 
 - **Input:** api_key, provider, user message.  
 - **Model:** Same as chat for that provider (e.g. GPT-4o or Grok).  
-- **System prompt:** Describes four options (chat, browser, desktop, **coding**) and the exact JSON shape to return. **Coding** = run Python in the sandbox (calculations, scripts), **not** desktop GUI automation.  
-- **Heuristic:** Messages that look like “execute Python / factorial / .py script” short-circuit to **coding** before the LLM (avoids misrouting to desktop). If the LLM returns **desktop** but the text still looks programmatic, the supervisor **overrides** to **coding**.  
+- **System prompt:** Describes five options (chat, browser, desktop, **coding**, **shell**) and the exact JSON shape to return. **Coding** = Python sandbox; **shell** = real host terminal (mkdir, drives, git, etc.) when `JARVIS_ENABLE_SHELL=1`.  
+- **Heuristic:** “execute Python / factorial / .py script” → **coding** before the LLM. When shell is enabled, phrases like “mkdir”, “powershell”, “list drives”, “git clone” → **shell** before the LLM. If the LLM returns **desktop** but the text still looks programmatic, override to **coding**; if it looks like a terminal/filesystem task, override to **shell**.  
 - **Output:** `run_agent`, `agent`, `goal`, `reasoning`, `next_steps`.  
-- Used only to **route**; it does not produce the final reply. The actual reply is produced by the **chat** node or one of the **browser / desktop / coding** agents.
+- Used only to **route**; it does not produce the final reply. The actual reply is produced by the **chat** node or one of the **browser / desktop / coding / shell** agents.
 
 ---
 
@@ -150,13 +156,23 @@ Again, **on_step** is the same callback; the backend sends these steps over the 
 
 ---
 
+## 7c. Shell agent (host terminal, opt-in)
+
+- **Input:** goal (e.g. “mkdir foo”, “list drives”, “run `git status`”), `on_step`, api_key, provider.  
+- **Enable:** `JARVIS_ENABLE_SHELL=1` on the server (see `backend/SHELL.md`).  
+- **Flow:** Multi-turn loop: LLM outputs JSON `{"done", "command", "thought}` → **run_shell_command** (PowerShell or bash under `JARVIS_SHELL_WORKDIR`) → stdout/stderr returned to the LLM until `done` or step limit.  
+- **Not a security boundary** — same risk class as SSH on that machine; blocklist only catches a few catastrophic patterns.
+
+---
+
 ## 8. Step emission and WebSocket
 
 - **on_step(step, thought, action, description, result, done, screenshot_base64=None)** is passed in state and called by:  
-  - **Supervisor step (0):** emitted by **run_browser** / **run_desktop** / **run_coding** via **`_emit_supervisor_step(state)`** (reasoning, next_steps).  
+  - **Supervisor step (0):** emitted by **run_browser** / **run_desktop** / **run_coding** / **run_shell** via **`_emit_supervisor_step(state)`** (reasoning, next_steps).  
   - **Browser:** navigate (step 1) then each loop step.  
   - **Desktop:** each loop step.  
   - **Coding:** plan (0), generate/execute (1), done (2).  
+  - **Shell:** plan (0), one **on_step** per command, then done.  
 - Each call pushes a payload to the **step_queue**. The **drain_steps** task (running alongside the graph) calls **`_emit_agent_step(...)`**, which **broadcasts** the payload to every WebSocket client connected to **`/ws/agent-steps`**.  
 - Payload includes: step, thought, action, description, result, done, and optionally **screenshot** (base64). The frontend subscribes to this WebSocket and displays steps and screenshots in the chat UI.
 
@@ -165,7 +181,7 @@ Again, **on_step** is the same callback; the backend sends these steps over the 
 ## 9. Tracing and observability
 
 - After the graph finishes (both stream and non-stream), the backend calls **trace_log(provider, route, message, reply, success, error, duration_sec, …)**.  
-- **route** is the state’s **route** set by the node that ran (chat, run_browser, run_desktop).  
+- **route** is the state’s **route** set by the node that ran (chat, run_browser, run_desktop, run_coding, run_shell).  
 - Traces are appended to **jarvis-observability/traces/trace.jsonl** and used later for eval generation and optimization (per-model success rates, tokens, errors).
 
 ---

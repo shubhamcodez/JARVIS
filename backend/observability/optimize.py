@@ -18,16 +18,17 @@ from .eval_runner import pass_at_k
 STATS_FILE = "optimization_stats.json"
 
 OPTIMIZER_SYSTEM = """You are an optimization analyst for a JARVIS-style agent system with:
-- A supervisor (LLM decides: chat vs browser vs desktop vs coding agent)
+- A supervisor (LLM decides: chat vs browser vs desktop vs coding vs shell agent)
 - Browser agent (Playwright: open URL, click/type/scroll from page summary)
 - Desktop agent (screenshot + vision LLM → click/type/scroll via pyautogui)
 - Coding agent (LLM writes Python → sandbox execution; no GUI)
+- Shell agent (LLM proposes host terminal commands; opt-in via JARVIS_ENABLE_SHELL)
 - Chat (plain LLM reply)
 
 Given trace stats (success rate, errors, tokens per provider) and eval pass@1 per model, and optionally sample failed runs or errors, output a JSON object with two arrays:
 
 1. "prompt_modification_instructions": list of objects with:
-   - "target": "supervisor" | "browser" | "desktop" | "coding" | "chat" (which prompt to modify)
+   - "target": "supervisor" | "browser" | "desktop" | "coding" | "shell" | "chat" (which prompt to modify)
    - "instruction": concrete text to add or change in that prompt (e.g. "Add: If the user message is ambiguous, prefer chat and ask for clarification.")
    - "reason": one sentence why (e.g. "Eval failures showed confusion on vague goals.")
 

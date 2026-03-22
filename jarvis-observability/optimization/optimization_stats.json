@@ -1,0 +1,16 @@
+{
+  "trace_stats": {
+    "openai": {
+      "success_rate": 1.0,
+      "total_runs": 1,
+      "token_input_total": 1,
+      "token_output_total": 5,
+      "error_count": 0,
+      "avg_duration_sec": 0.7528079000039725
+    }
+  },
+  "eval_pass_at_1": {},
+  "suggestions": [],
+  "prompt_modification_instructions": [],
+  "code_addition_suggestions": []
+}
