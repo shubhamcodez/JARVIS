@@ -10,7 +10,7 @@ End-to-end flow from user message to reply: routing, supervisor, desktop/coding/
 - **POST `/chat/send-message/stream`** (streaming): SSE stream; used by the frontend. Can stream chat tokens **or** run the agent and send one final event with the full reply.
 - **POST `/chat/response`**: chat-only, no routing (direct LLM reply).
 
-The **provider** (OpenAI or xAI) and **API key** come from `get_llm_provider()` and `get_llm_api_key()` (Settings / `jarvis-llm-provider.txt`).
+The **provider** (OpenAI or xAI) and **API key** come from `get_llm_provider()` and `get_llm_api_key()` (Settings updates `backend/jarvis-config.yaml`; keys stay in `.env`).
 
 ---
 

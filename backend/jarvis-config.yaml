@@ -1,0 +1,10 @@
+# JARVIS backend settings (API keys stay in repo-root .env)
+llm_provider: openai  # openai | xai
+
+chat:
+  history_limit: 120
+  memory_query_recent_turns: 12
+
+grep:
+  # Optional default directory for GET /tools/grep when `root` is omitted (null = unset)
+  default_root: null

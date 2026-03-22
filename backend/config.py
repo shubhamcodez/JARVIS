@@ -1,36 +1,96 @@
-"""Load env and config paths."""
+"""Load env (secrets), paths, and jarvis-config.yaml (provider + app settings)."""
+from __future__ import annotations
+
+import copy
 import os
 from pathlib import Path
+from typing import Any
 
+import yaml
 from dotenv import load_dotenv
 
-# Load .env from project root (parent of backend/)
-_ROOT = Path(__file__).resolve().parent.parent
-load_dotenv(_ROOT / ".env")
+# Repo root (parent of backend/)
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+_BACKEND_ROOT = Path(__file__).resolve().parent
+load_dotenv(_REPO_ROOT / ".env")
 
-# LLM provider: "openai" or "xai"
-LLM_PROVIDER_FILE = _ROOT / "jarvis-llm-provider.txt"
+CONFIG_YAML = _BACKEND_ROOT / "jarvis-config.yaml"
 
-# Default directory for GET /tools/grep when `root` is omitted (optional)
-GREP_ROOT_FILE = _ROOT / "jarvis-grep-root.txt"
+# Legacy paths at repo root (used only if jarvis-config.yaml is missing)
+_LEGACY_LLM_PROVIDER_FILE = _REPO_ROOT / "jarvis-llm-provider.txt"
+_LEGACY_GREP_ROOT_FILE = _REPO_ROOT / "jarvis-grep-root.txt"
+
+
+_DEFAULTS: dict[str, Any] = {
+    "llm_provider": "openai",
+    "chat": {
+        "history_limit": 120,
+        "memory_query_recent_turns": 12,
+    },
+    "grep": {
+        "default_root": None,
+    },
+}
+
+
+def _deep_merge(base: dict[str, Any], over: dict[str, Any]) -> dict[str, Any]:
+    out = dict(base)
+    for k, v in over.items():
+        if k in out and isinstance(out[k], dict) and isinstance(v, dict):
+            out[k] = {**out[k], **v}
+        else:
+            out[k] = v
+    return out
+
+
+def _load_raw_user_config() -> dict[str, Any]:
+    """YAML file if present; otherwise legacy .txt files at repo root."""
+    if CONFIG_YAML.exists():
+        with CONFIG_YAML.open(encoding="utf-8") as f:
+            return yaml.safe_load(f) or {}
+
+    legacy: dict[str, Any] = {}
+    if _LEGACY_LLM_PROVIDER_FILE.exists():
+        p = _LEGACY_LLM_PROVIDER_FILE.read_text(encoding="utf-8").strip().lower()
+        if p in ("openai", "xai"):
+            legacy["llm_provider"] = p
+    if _LEGACY_GREP_ROOT_FILE.exists():
+        s = _LEGACY_GREP_ROOT_FILE.read_text(encoding="utf-8").strip()
+        if s:
+            legacy.setdefault("grep", {})["default_root"] = s
+    return legacy
+
+
+def _merged_config() -> dict[str, Any]:
+    return _deep_merge(copy.deepcopy(_DEFAULTS), _load_raw_user_config())
 
 
 def get_llm_provider() -> str:
-    """Current LLM provider: 'openai' or 'xai'. Default openai."""
-    if LLM_PROVIDER_FILE.exists():
-        p = LLM_PROVIDER_FILE.read_text(encoding="utf-8").strip().lower()
-        if p in ("openai", "xai"):
-            return p
-    return "openai"
+    """Current LLM provider: 'openai' or 'xai'. From jarvis-config.yaml (or legacy txt if no yaml)."""
+    prov = str(_merged_config().get("llm_provider") or "openai").strip().lower()
+    return prov if prov in ("openai", "xai") else "openai"
 
 
 def set_llm_provider(provider: str) -> None:
-    """Set LLM provider to 'openai' or 'xai'."""
+    """Set LLM provider to 'openai' or 'xai'; writes jarvis-config.yaml."""
     p = (provider or "").strip().lower()
     if p not in ("openai", "xai"):
         raise ValueError("provider must be 'openai' or 'xai'")
-    LLM_PROVIDER_FILE.parent.mkdir(parents=True, exist_ok=True)
-    LLM_PROVIDER_FILE.write_text(p, encoding="utf-8")
+    CONFIG_YAML.parent.mkdir(parents=True, exist_ok=True)
+    raw: dict[str, Any] = {}
+    if CONFIG_YAML.exists():
+        with CONFIG_YAML.open(encoding="utf-8") as f:
+            raw = yaml.safe_load(f) or {}
+    raw["llm_provider"] = p
+    merged = _deep_merge(copy.deepcopy(_DEFAULTS), raw)
+    with CONFIG_YAML.open("w", encoding="utf-8") as f:
+        yaml.safe_dump(
+            merged,
+            f,
+            default_flow_style=False,
+            sort_keys=False,
+            allow_unicode=True,
+        )
 
 
 def get_openai_api_key() -> str:
@@ -58,7 +118,7 @@ def get_llm_api_key() -> str:
 
 def chats_config_path() -> Path:
     """Path to file storing custom chats directory."""
-    return _ROOT / "jarvis-chats-dir.txt"
+    return _REPO_ROOT / "jarvis-chats-dir.txt"
 
 
 def chats_dir() -> Path:
@@ -70,43 +130,39 @@ def chats_dir() -> Path:
             d = Path(s)
             if d.is_dir() or not d.exists():
                 return d
-    return _ROOT / "chats"
+    return _REPO_ROOT / "chats"
 
 
 def get_grep_root() -> Path | None:
     """
-    Optional default search root for file grep: JARVIS_GREP_ROOT env, else jarvis-grep-root.txt.
-    Returns None if unset or path is not an existing directory.
+    Optional default search root for file grep: jarvis-config.yaml grep.default_root,
+    or legacy jarvis-grep-root.txt if yaml is missing.
     """
-    env = (os.environ.get("JARVIS_GREP_ROOT") or "").strip()
-    if env:
-        p = Path(env).expanduser().resolve()
-        return p if p.is_dir() else None
-    if GREP_ROOT_FILE.exists():
-        s = GREP_ROOT_FILE.read_text(encoding="utf-8").strip()
-        if s:
-            p = Path(s).expanduser().resolve()
-            return p if p.is_dir() else None
-    return None
+    raw = (_merged_config().get("grep") or {}).get("default_root")
+    if raw is None:
+        return None
+    s = str(raw).strip()
+    if not s:
+        return None
+    p = Path(s).expanduser().resolve()
+    return p if p.is_dir() else None
 
 
 def get_chat_history_limit() -> int:
-    """
-    Max chat log messages sent to the LLM each turn (router + streaming chat).
-    Override with JARVIS_CHAT_HISTORY_LIMIT (clamped 1–500). Default 120.
-    """
-    raw = (os.environ.get("JARVIS_CHAT_HISTORY_LIMIT") or "").strip()
-    if raw.isdigit():
-        return max(1, min(int(raw), 500))
-    return 120
+    """Max chat log messages sent to the LLM each turn (clamped 1–500)."""
+    v = (_merged_config().get("chat") or {}).get("history_limit", 120)
+    try:
+        n = int(v)
+        return max(1, min(n, 500))
+    except (TypeError, ValueError):
+        return 120
 
 
 def get_memory_query_recent_turns() -> int:
-    """
-    How many recent messages from the log are folded into the vector-memory retrieval query string.
-    Override with JARVIS_MEMORY_QUERY_RECENT_TURNS (clamped 1–80). Default 12.
-    """
-    raw = (os.environ.get("JARVIS_MEMORY_QUERY_RECENT_TURNS") or "").strip()
-    if raw.isdigit():
-        return max(1, min(int(raw), 80))
-    return 12
+    """Recent messages folded into vector-memory retrieval query (clamped 1–80)."""
+    v = (_merged_config().get("chat") or {}).get("memory_query_recent_turns", 12)
+    try:
+        n = int(v)
+        return max(1, min(n, 80))
+    except (TypeError, ValueError):
+        return 12
