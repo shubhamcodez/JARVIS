@@ -59,40 +59,25 @@ So for the user: either they see **streaming chat text** or **agent steps (and s
 
 2. **Supervisor node**  
    - Runs **supervisor_decision(api_key, provider, message)**.  
-   - Writes **supervisor_decision** and **goal** into state.  
-   - No `on_step` call here; the UI “Supervisor” step is emitted later by the agent nodes.
+   - Writes **supervisor_decision** (including **`agents`**: ordered list of `{ agent, goal }`, up to 5) and **goal** (first step’s goal) into state.  
+   - No `on_step` call here; the UI “Supervisor” step is emitted when the agent plan runs.
 
 3. **After supervisor**  
-   - **Condition:**  
-     - If `run_agent` is false or goal is empty → **chat**.  
-     - Else if agent is **"desktop"** → **run_desktop**.  
-     - Else if agent is **"coding"** → **run_coding**.  
-     - Else if agent is **"shell"** → **run_shell** (host terminal; requires `JARVIS_ENABLE_SHELL=1`).  
-     - Else if agent is **"finance"** → **run_finance** (yfinance + analysis).  
-     - Else → **chat**.
+   - If `run_agent` is false or **`agents`** is empty → **chat**.  
+   - Else → **run_agent_plan** (runs **desktop / coding / shell / finance** steps **in order** inside one node).
 
 4. **Chat node**  
    - Calls `client.chat(api_key, message, paths)` (current provider).  
    - Sets **reply** and **route: "chat"** in state → **END**.
 
-5. **run_desktop node**  
-   - Calls **`_emit_supervisor_step(state)`**, then **run_desktop_agent(goal, 10, on_step, api_key, provider)**.  
-   - Sets **reply** and **route: "run_desktop"** → **END**.
+5. **run_agent_plan node**  
+   - **`_emit_supervisor_step(state)`** once, then for each entry in **`agents`**: optional web-search augment on the **first** step only; each specialist runs with **`on_step` offsets** so steps don’t collide; later steps receive truncated outputs from earlier agents as context.  
+   - **Reply** is markdown sections (`### Desktop`, `### Coding`, …) concatenated.  
+   - **route:** `run_multi_agent` if more than one section ran, else `run_desktop` / `run_coding` / `run_shell` / `run_finance` matching the single specialist.  
+   - **tool_used:** last meaningful tool payload (e.g. sandbox, yfinance, web_search).  
+   - **Shell** remains opt-in (`JARVIS_ENABLE_SHELL=1`). See **FINANCE.md** / **SHELL.md** for agent details.
 
-6. **run_coding node**  
-   - **`_emit_supervisor_step(state)`** then **run_coding_agent(goal, on_step, api_key, provider)** (LLM writes Python → **sandbox** via `tools/python_sandbox.py`).  
-   - Sets **reply**, **route: "run_coding"**, optional **tool_used** (`python_sandbox`) → **END**.
-
-7. **run_shell node**  
-   - **`_emit_supervisor_step(state)`** then **run_shell_agent(goal, on_step, api_key, provider)** (LLM proposes host shell commands → `tools/shell_runner.py`).  
-   - Sets **reply**, **route: "run_shell"**, optional **tool_used** (`shell`) → **END**.  
-   - **Opt-in:** `JARVIS_ENABLE_SHELL=1`; default cwd `jarvis-shell-work/` (see `backend/SHELL.md`).
-
-8. **run_finance node**  
-   - **`_emit_supervisor_step(state)`** then **run_finance_agent(goal, on_step, api_key, provider)** (planner LLM → **`tools/finance_data.py`** / yfinance → analyst LLM).  
-   - Sets **reply**, **route: "run_finance"**, optional **tool_used** (`yfinance`). See `backend/FINANCE.md`.
-
-So the **entire agent workflow** for a given message is: **Start → (optional) Supervisor → one of Chat / run_desktop / run_coding / run_shell / run_finance → END**. Only one of these runs per request. There is **no** embedded Playwright browser agent; web tasks on the machine use **desktop** (real Chrome on screen) or **chat** (links and instructions).
+So the **entire agent workflow** for a given message is: **Start → Supervisor → chat OR run_agent_plan → END**. The supervisor may schedule **one or several** specialists in sequence on a single user turn. There is **no** embedded Playwright browser agent; on-screen browser work uses **desktop** (real Chrome) or **chat** (links and instructions).
 
 ---
 
@@ -100,10 +85,10 @@ So the **entire agent workflow** for a given message is: **Start → (optional) 
 
 - **Input:** api_key, provider, user message.  
 - **Model:** Same as chat for that provider (e.g. GPT-4o or Grok).  
-- **System prompt:** Describes five options (chat, desktop, **coding**, **shell**, **finance**) and the exact JSON shape to return. **Finance** = yfinance + **prose** answers. **Coding** = Python sandbox (numpy/pandas/matplotlib/yfinance for analysis); **shell** = real host terminal when `JARVIS_ENABLE_SHELL=1`. **Desktop** includes automating the **visible** browser (Chrome, etc.) on the user’s screen.  
-- **Heuristic:** “execute Python / factorial / .py script” or **plots / regression / backtest** on tickers → **coding** first. When shell is enabled, terminal/filesystem phrases → **shell**. Other stock/market **data** phrasing → **finance**. If the LLM picks **finance** but the message is **scripted analysis**, override to **coding**. If the LLM returns **desktop** but the text still looks programmatic, override to **coding**; terminal-style → **shell**.  
-- **Output:** `run_agent`, `agent`, `goal`, `reasoning`, `next_steps`.  
-- Used only to **route**; it does not produce the final reply. The actual reply is produced by the **chat** node or one of the **desktop / coding / shell / finance** agents.
+- **System prompt:** Describes five options and asks for either an **`agents` array** (ordered subtasks) or the compact single **`agent` + `goal`** form. **Finance** = yfinance + **prose**; **coding** = sandbox; **shell** = host terminal when enabled; **desktop** = visible browser/GUI.  
+- **Heuristic:** Same overrides as before (coding / shell / finance signals); heuristics return a one-element **`agents` list**. Per-plan-entry sanitization reroutes desktop→coding/shell and finance→coding when the **sub-goal** text matches those patterns.  
+- **Output:** `run_agent`, **`agents`** (`[{ "agent", "goal" }, …]`), plus **`agent` / `goal`** on the first step for backward compatibility, `reasoning`, `next_steps`.  
+- Used only to **route**; the final reply is produced by **chat** or by **run_agent_plan** (which invokes the specialists).
 
 ---
 
@@ -238,19 +223,16 @@ POST /chat/send-message/stream  (or /chat/send-message)
         ↓
 supervisor_decision(api_key, provider, message)
         ↓
-run_agent false or no goal? → Stream chat reply (deltas + done) → end
+run_agent false or agents empty? → Stream chat reply (deltas + done) → end
         ↓
-run_agent true, goal set
+run_agent true, agents = [ … ]
         ↓
 Build initial_state (message, paths, chat_id, api_key, provider, on_step)
 Start drain_steps task (consumes step_queue → _emit_agent_step → WebSocket)
         ↓
 LangGraph: __start__ → supervisor node → conditional:
-        ├─ chat node        → reply + route "chat"        → END
-        ├─ run_desktop node → _emit_supervisor_step + run_desktop_agent → reply + route "run_desktop" → END
-        ├─ run_coding node  → _emit_supervisor_step + run_coding_agent → reply + route "run_coding" → END
-        ├─ run_shell node   → _emit_supervisor_step + run_shell_agent → reply + route "run_shell" → END
-        └─ run_finance node → _emit_supervisor_step + run_finance_agent → reply + route "run_finance" → END
+        ├─ chat node           → reply + route "chat" → END
+        └─ run_agent_plan node → _emit_supervisor_step + sequential desktop/coding/shell/finance → reply + route per run → END
         ↓
 trace_log(provider, route, message, reply, ...)
         ↓
@@ -284,4 +266,4 @@ Parse request  →  Load task state  →  Retrieve (vector + keyword → rerank)
         →  Update working state  →  Write-back important turns (chunk → embed → store)
 ```
 
-The **agent workflow** is: one optional supervisor call, then exactly one of **chat** / **desktop** / **coding** / **shell** / **finance**; steps (and screenshots for desktop) are streamed over the WebSocket; the final answer is in **reply** and in the trace log. **Evals** use traces to produce prompt/code suggestions. **Memory** (when implemented) wraps each turn with retrieval and write-back for persistence and continuity.
+The **agent workflow** is: one supervisor call, then **chat** or **run_agent_plan** (one or more of **desktop** / **coding** / **shell** / **finance** in order); steps (and screenshots for desktop) stream over the WebSocket; the final answer is in **reply** and in the trace log. **Evals** use traces to produce prompt/code suggestions. **Memory** (when implemented) wraps each turn with retrieval and write-back for persistence and continuity.

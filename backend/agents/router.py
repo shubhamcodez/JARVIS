@@ -1,13 +1,15 @@
-"""Router graph: supervisor decides route → chat | desktop | coding | shell | finance agent."""
+"""Router graph: supervisor builds an agent plan → chat | run_agent_plan (one or many specialists)."""
 from __future__ import annotations
 
 import asyncio
-from typing import Literal, Optional
+from typing import Callable, Literal, Optional
 
 from langgraph.graph import END, StateGraph
 
 from .state import RouterState
 from tools.runner import run_tools_for_turn
+
+_STEP_BUCKET = 80
 
 
 async def _supervisor_node(state: RouterState) -> RouterState:
@@ -17,7 +19,12 @@ async def _supervisor_node(state: RouterState) -> RouterState:
     api_key = state["api_key"]
     provider = state.get("provider") or "openai"
     decision = await asyncio.to_thread(supervisor_decision, api_key, provider, message)
-    goal = (decision.get("goal") or message).strip()
+    agents = decision.get("agents") or []
+    goal = (
+        (agents[0].get("goal") if agents else None)
+        or (decision.get("goal") or "")
+        or message
+    ).strip()
     return {"supervisor_decision": decision, "goal": goal}
 
 
@@ -93,82 +100,139 @@ def _emit_supervisor_step(state: RouterState) -> None:
     decision = state.get("supervisor_decision") or {}
     reasoning = decision.get("reasoning") or ""
     next_steps = decision.get("next_steps") or "Running agent."
+    agents = decision.get("agents") or []
+    if len(agents) > 1:
+        chain = " → ".join((x.get("agent") or "?") for x in agents)
+        next_steps = f"{next_steps}\n\nAgents: {chain}"
     on_step(0, reasoning, "supervisor", next_steps, None, False)
 
 
-async def _run_desktop_node(state: RouterState) -> RouterState:
-    from .desktop_agent import run_desktop_agent
-    from tools.web_search import augment_goal_with_web_search
-
-    _emit_supervisor_step(state)
-    goal, ws_tool = augment_goal_with_web_search(dict(state))
-    on_step = state.get("on_step")
-    api_key = state["api_key"]
-    provider = state.get("provider") or "openai"
-    reply = await asyncio.to_thread(run_desktop_agent, goal, 10, on_step, api_key=api_key, provider=provider)
-    out: RouterState = {"reply": reply, "route": "run_desktop"}
-    if ws_tool:
-        out["tool_used"] = ws_tool
-    return out
-
-
-async def _run_coding_node(state: RouterState) -> RouterState:
-    from .coding_agent import run_coding_agent
-    from tools.web_search import augment_goal_with_web_search
-
-    _emit_supervisor_step(state)
-    goal, ws_tool = augment_goal_with_web_search(dict(state))
-    on_step = state.get("on_step")
-    api_key = state["api_key"]
-    provider = state.get("provider") or "openai"
-    reply, tool_used = await asyncio.to_thread(
-        run_coding_agent, goal, on_step, api_key, provider
+def _wrap_on_step_for_plan(
+    on_step: Optional[Callable],
+    bucket_index: int,
+    agent_key: str,
+) -> Optional[Callable]:
+    if not on_step:
+        return None
+    label = {"desktop": "Desktop", "coding": "Coding", "shell": "Shell", "finance": "Finance"}.get(
+        agent_key, agent_key
     )
-    out: RouterState = {"reply": reply, "route": "run_coding"}
-    if tool_used:
-        out["tool_used"] = tool_used
-    elif ws_tool:
-        out["tool_used"] = ws_tool
-    return out
+    off = bucket_index * _STEP_BUCKET
+
+    def wrapped(step, thought, action, description, result, done, screenshot_base64=None):
+        desc = (description or "").strip()
+        prefixed = f"[{label}] {desc}" if desc else f"[{label}]"
+        on_step(step + off, thought, action, prefixed, result, done, screenshot_base64)
+
+    return wrapped
 
 
-async def _run_shell_node(state: RouterState) -> RouterState:
+async def _run_agent_plan_node(state: RouterState) -> RouterState:
+    """Run one or more specialist agents in order; later steps see truncated prior outputs."""
+    from .coding_agent import run_coding_agent
+    from .desktop_agent import run_desktop_agent
+    from .finance_agent import run_finance_agent
     from .shell_agent import run_shell_agent
     from tools.web_search import augment_goal_with_web_search
 
+    decision = state.get("supervisor_decision") or {}
+    plan = decision.get("agents") or []
+    if not plan:
+        return {"reply": "No agent plan to run.", "route": "chat"}
+
     _emit_supervisor_step(state)
-    goal, ws_tool = augment_goal_with_web_search(dict(state))
     on_step = state.get("on_step")
     api_key = state["api_key"]
     provider = state.get("provider") or "openai"
-    reply, tool_used = await asyncio.to_thread(
-        run_shell_agent, goal, on_step, api_key, provider
-    )
-    out: RouterState = {"reply": reply, "route": "run_shell"}
-    if tool_used:
-        out["tool_used"] = tool_used
-    elif ws_tool:
-        out["tool_used"] = ws_tool
-    return out
 
+    route_by_agent = {
+        "desktop": "run_desktop",
+        "coding": "run_coding",
+        "shell": "run_shell",
+        "finance": "run_finance",
+    }
 
-async def _run_finance_node(state: RouterState) -> RouterState:
-    from .finance_agent import run_finance_agent
-    from tools.web_search import augment_goal_with_web_search
+    sections: list[str] = []
+    prev_snippets: list[str] = []
+    last_tool: Optional[dict] = None
+    last_route = "run_multi_agent"
 
-    _emit_supervisor_step(state)
-    goal, ws_tool = augment_goal_with_web_search(dict(state))
-    on_step = state.get("on_step")
-    api_key = state["api_key"]
-    provider = state.get("provider") or "openai"
-    reply, tool_used = await asyncio.to_thread(
-        run_finance_agent, goal, on_step, api_key, provider
-    )
-    out: RouterState = {"reply": reply, "route": "run_finance"}
-    if tool_used:
-        out["tool_used"] = tool_used
-    elif ws_tool:
-        out["tool_used"] = ws_tool
+    for idx, item in enumerate(plan):
+        agent = item.get("agent")
+        base_goal = (item.get("goal") or "").strip()
+        if not agent or not base_goal:
+            continue
+
+        if idx > 0 and prev_snippets:
+            ctx = (
+                "\n\n---\n**Earlier agents in this run (context; use facts below):**\n\n"
+                + "\n\n".join(prev_snippets[-3:])
+            )
+            full_goal = base_goal + ctx
+        else:
+            full_goal = base_goal
+
+        if idx == 0:
+            goal_run, ws_tool = augment_goal_with_web_search(dict(state) | {"goal": full_goal})
+            if ws_tool:
+                last_tool = ws_tool
+        else:
+            goal_run = full_goal
+            ws_tool = None
+
+        wrapped = _wrap_on_step_for_plan(on_step, idx, str(agent))
+
+        try:
+            if agent == "desktop":
+                reply = await asyncio.to_thread(
+                    run_desktop_agent,
+                    goal_run,
+                    10,
+                    wrapped,
+                    api_key=api_key,
+                    provider=provider,
+                )
+                tu = None
+            elif agent == "coding":
+                reply, tu = await asyncio.to_thread(
+                    run_coding_agent, goal_run, wrapped, api_key, provider
+                )
+            elif agent == "shell":
+                reply, tu = await asyncio.to_thread(
+                    run_shell_agent, goal_run, wrapped, api_key, provider
+                )
+            elif agent == "finance":
+                reply, tu = await asyncio.to_thread(
+                    run_finance_agent, goal_run, wrapped, api_key, provider
+                )
+            else:
+                continue
+        except Exception as e:
+            reply = f"**{agent}** failed: {e}"
+            tu = None
+
+        if tu:
+            last_tool = tu
+        elif ws_tool and last_tool is None:
+            last_tool = ws_tool
+
+        title = {"desktop": "Desktop", "coding": "Coding", "shell": "Shell", "finance": "Finance"}.get(
+            agent, agent
+        )
+        sections.append(f"### {title}\n\n{reply}")
+        prev_snippets.append(f"**{title}:**\n{(reply or '')[:8000]}")
+        last_route = route_by_agent.get(str(agent), last_route)
+
+    if not sections:
+        return {"reply": "No agent steps completed.", "route": "chat"}
+
+    combined = "\n\n".join(sections)
+    out: RouterState = {
+        "reply": combined,
+        "route": "run_multi_agent" if len(sections) > 1 else last_route,
+    }
+    if last_tool:
+        out["tool_used"] = last_tool
     return out
 
 
@@ -180,37 +244,23 @@ def _route_after_start(state: RouterState) -> Literal["chat", "supervisor"]:
     return "supervisor"
 
 
-def _route_after_supervisor(
-    state: RouterState,
-) -> Literal["chat", "run_desktop", "run_coding", "run_shell", "run_finance"]:
+def _route_after_supervisor(state: RouterState) -> Literal["chat", "run_agent_plan"]:
     decision = state.get("supervisor_decision") or {}
     if not decision.get("run_agent"):
         return "chat"
-    agent = decision.get("agent")
-    goal = (state.get("goal") or "").strip()
-    if not goal:
+    agents = decision.get("agents") or []
+    if not agents:
         return "chat"
-    if agent == "desktop":
-        return "run_desktop"
-    if agent == "coding":
-        return "run_coding"
-    if agent == "shell":
-        return "run_shell"
-    if agent == "finance":
-        return "run_finance"
-    return "chat"
+    return "run_agent_plan"
 
 
 def create_router_graph():
-    """Build the graph: start → [chat | supervisor] → [chat | desktop | coding | shell | finance] → END."""
+    """Build the graph: start → [chat | supervisor] → [chat | run_agent_plan] → END."""
     builder = StateGraph(RouterState)
 
     builder.add_node("supervisor", _supervisor_node)
     builder.add_node("chat", _chat_node)
-    builder.add_node("run_desktop", _run_desktop_node)
-    builder.add_node("run_coding", _run_coding_node)
-    builder.add_node("run_shell", _run_shell_node)
-    builder.add_node("run_finance", _run_finance_node)
+    builder.add_node("run_agent_plan", _run_agent_plan_node)
 
     builder.add_conditional_edges(
         "__start__",
@@ -220,18 +270,9 @@ def create_router_graph():
     builder.add_conditional_edges(
         "supervisor",
         _route_after_supervisor,
-        path_map={
-            "chat": "chat",
-            "run_desktop": "run_desktop",
-            "run_coding": "run_coding",
-            "run_shell": "run_shell",
-            "run_finance": "run_finance",
-        },
+        path_map={"chat": "chat", "run_agent_plan": "run_agent_plan"},
     )
     builder.add_edge("chat", END)
-    builder.add_edge("run_desktop", END)
-    builder.add_edge("run_coding", END)
-    builder.add_edge("run_shell", END)
-    builder.add_edge("run_finance", END)
+    builder.add_edge("run_agent_plan", END)
 
     return builder.compile()

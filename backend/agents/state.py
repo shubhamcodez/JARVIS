@@ -12,7 +12,7 @@ class RouterState(TypedDict, total=False):
     chat_id: Optional[str]
     api_key: str
     provider: str  # "openai" or "xai"
-    route: str  # "chat" | "run_desktop" | "run_coding" | "run_shell" | "run_finance" (set by the node that ran)
+    route: str  # "chat" | "run_desktop" | "run_coding" | "run_shell" | "run_finance" | "run_multi_agent"
     classification: dict
     supervisor_decision: dict
     goal: str

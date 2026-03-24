@@ -1,39 +1,154 @@
-"""Supervisor agent: decides whether to run an agent at all, which one (desktop/coding/shell/finance), and the next steps."""
+"""Supervisor agent: decides whether to run agents, which ones (one or more), and goals per step."""
 from __future__ import annotations
 
 import json
 import re
-from typing import Optional
+from typing import Any, Optional
 
 from agents.models import chat_completion_limit_kwargs, get_llm_client
 from tools.shell_runner import is_shell_enabled
 
+MAX_AGENTS_PER_PLAN = 5
+
 _SUPERVISOR_SYSTEM = """You are the JARVIS supervisor. You decide how to handle each user message.
 
-You have five options:
-1. **chat** – Answer with conversation only (questions, explanations, summarize, chat). No code execution or computer control. Use for web questions, links, "what is X", search-style questions answered in text (there is no separate Playwright browser agent).
-2. **desktop** – Control the **GUI** with the **mouse cursor** and **keyboard**: click, double-click, right-click, type text, press keys (Enter, Tab, arrows, etc.), shortcuts (Ctrl+C, Alt+F4, …)—taskbar, apps, visible browser windows. Use when they need **physical** mouse/keyboard on their display.
-3. **coding** – Run **Python in the sandbox**: math/scripts, **numpy/pandas**, **matplotlib** charts (headless), **yfinance inside code** when needed—regressions, correlations, backtests, simulations, “analyze with Python”. **NOT** desktop automation. Use **finance** (not coding) only for quick fetched data + prose, no custom analysis code.
-4. **shell** – Run **real terminal / host shell** commands (mkdir, rm, ls, drives, git, npm, PowerShell, bash). Only when the user wants the **actual machine** shell—not the sandbox. **Requires** the server to have shell tools enabled; if unsure, prefer **chat** to explain.
-5. **finance** – **Market data + short factual commentary** via **yfinance**: quotes, key stats, P/E, YTD, simple comparisons, dividends, fundamentals—**read out data and explain in prose**. If they want **plots, heavy statistics, or scripted analysis**, use **coding**.
+You can assign **one specialist** or **several in sequence** when the task naturally splits (e.g. fetch market data then plot it; run shell prep then coding; desktop navigation then a summary — use your judgment).
 
-Reply with ONLY a JSON object, no markdown or other text. Use this exact shape:
+Specialists:
+1. **chat** – Conversation only (questions, explain, summarize). No code execution or GUI. For web Q&A in prose (there is no separate Playwright browser agent).
+2. **desktop** – **GUI** control: mouse and keyboard on the user’s screen (apps, taskbar, visible browser windows).
+3. **coding** – **Python sandbox**: numpy/pandas/matplotlib, yfinance inside code, simulations, plots — not desktop automation. For heavy analysis on tickers, prefer **coding** after **finance** if they need both data and plots.
+4. **shell** – **Host terminal** (git, npm, mkdir, PowerShell, bash). Only when they need the real machine shell. If shell is disabled on the server, do not choose **shell**.
+5. **finance** – **yfinance + short prose**: quotes, P/E, comparisons without custom code/plots.
+
+Reply with ONLY a JSON object, no markdown. Prefer this shape when **multiple** steps are needed:
 {
-  "run_agent": true or false,
-  "agent": "desktop" or "coding" or "shell" or "finance" or null,
-  "goal": "one clear sentence describing the task" or null,
-  "reasoning": "one sentence why you chose this",
-  "next_steps": "short list of steps I will take"
+  "run_agent": true,
+  "agents": [
+    { "agent": "finance", "goal": "concise subtask for this agent" },
+    { "agent": "coding", "goal": "next subtask; may refer to prior results" }
+  ],
+  "reasoning": "one sentence",
+  "next_steps": "ordered plan across agents"
+}
+
+For a **single** specialist you may use either `agents` with one element **or** the compact form:
+{
+  "run_agent": true,
+  "agent": "desktop" or "coding" or "shell" or "finance",
+  "goal": "one clear sentence",
+  "reasoning": "...",
+  "next_steps": "..."
+}
+
+When **no** agent is needed:
+{
+  "run_agent": false,
+  "agents": [],
+  "agent": null,
+  "goal": null,
+  "reasoning": "...",
+  "next_steps": ""
 }
 
 Rules:
-- Questions, hello, explain, summarize (no action): run_agent false, agent null, goal null.
-- **Open a website / search Google / use a web app on their machine**: run_agent true, agent **"desktop"** if they need the on-screen browser automated; otherwise **chat** to give URLs, steps, or explanations.
-- **Programming / run Python / script / factorial / calculate with code / execute code / matplotlib / pandas / plot or chart data**: run_agent true, agent **"coding"** — never "desktop" for these.
-- **Terminal / mkdir / rm / list drives / bash / PowerShell / git clone / npm** on the host: run_agent true, agent **"shell"** (not desktop, not coding sandbox).
-- **Stock price, ticker, P/E, market cap, dividend, simple compare NVDA vs AMD, SPY quote, BTC-USD** (data + explanation, no plots/code): run_agent true, agent **"finance"**. If they ask to **plot, regress, simulate, backtest, correlation matrix, run statistical analysis** on tickers → **"coding"** (not finance).
-- Desktop when the user needs **mouse/keyboard on their screen** (taskbar, apps, visible browser windows).
+- Use **multiple** `agents` when steps are sequential and need different capabilities (data fetch → code/chart; shell → code; desktop → chat follow-up is usually one desktop goal unless they asked for two phases).
+- **Programming / matplotlib / pandas / sandbox** → **coding** (not desktop).
+- **mkdir / git / npm / terminal** → **shell** (not desktop), only if appropriate.
+- **Ticker quote + plot** → often **finance** then **coding** in two entries.
 - Be decisive. Output only valid JSON."""
+
+
+def _decision_with_agents(
+    agents: list[dict],
+    reasoning: str = "",
+    next_steps: str = "",
+) -> dict:
+    if not agents:
+        return {
+            "run_agent": False,
+            "agents": [],
+            "agent": None,
+            "goal": None,
+            "reasoning": (reasoning or "").strip(),
+            "next_steps": (next_steps or "").strip(),
+        }
+    a0 = agents[0]
+    return {
+        "run_agent": True,
+        "agents": agents,
+        "agent": a0.get("agent"),
+        "goal": a0.get("goal"),
+        "reasoning": (reasoning or "").strip(),
+        "next_steps": (next_steps or "").strip(),
+    }
+
+
+def _coding_override_for(low: str) -> bool:
+    if any(
+        k in low
+        for k in (
+            "factorial",
+            "python script",
+            "execute python",
+            "run python",
+            "run a script",
+            "write a program",
+            "write python",
+            "coding task",
+            "in python",
+            "sandbox",
+        )
+    ):
+        return True
+    return ".py" in low and ("run" in low or "execute" in low)
+
+
+def _shell_reroute_for(low: str) -> bool:
+    return any(
+        k in low
+        for k in (
+            "mkdir ",
+            "rmdir ",
+            "rm -",
+            "bash",
+            "powershell",
+            "pwsh",
+            "terminal",
+            "wsl ",
+            "diskpart",
+            "git clone",
+            "npm install",
+            "pnpm ",
+            "which drive",
+            "list drives",
+            "list disk",
+            "get-psdrive",
+            "shell command",
+        )
+    )
+
+
+def _sanitize_plan_entry(agent: Optional[str], goal: str, signal_text: str) -> Optional[dict[str, str]]:
+    """Return {agent, goal} or None. signal_text drives desktop→coding/shell/finance→coding reroutes."""
+    a = agent
+    if a == "browser":
+        return None
+    if a not in ("desktop", "coding", "shell", "finance"):
+        return None
+    g = (goal or "").strip()
+    if not g:
+        return None
+    low = (signal_text or "").lower()
+    if a == "desktop" and _coding_override_for(low):
+        a = "coding"
+    if a == "desktop" and is_shell_enabled() and _shell_reroute_for(low):
+        a = "shell"
+    if a == "finance" and _finance_quant_coding_signals(low):
+        a = "coding"
+    if a == "shell" and not is_shell_enabled():
+        return None
+    return {"agent": a, "goal": g}
 
 
 def _finance_quant_coding_signals(low: str) -> bool:
@@ -140,28 +255,21 @@ def _finance_quant_coding_signals(low: str) -> bool:
 
 
 def _heuristic_coding_task(message: str) -> Optional[dict]:
-    """
-    Strong signals for programmatic work; avoids sending "run a python script" to the desktop agent.
-    Skips when the message looks like a URL-first browser task.
-    """
     m = (message or "").strip()
     if not m:
         return None
     low = m.lower()
     if re.search(r"https?://\S+", low):
         return None
-    # Browser-y phrases that mention python in URL context
     if "python.org" in low and "open" in low:
         return None
 
     if _finance_quant_coding_signals(low):
-        return {
-            "run_agent": True,
-            "agent": "coding",
-            "goal": m,
-            "reasoning": "Heuristic: quantitative or visualization analysis (sandbox), not finance prose-only fetch.",
-            "next_steps": "1. Plan analysis 2. Python (numpy/pandas/matplotlib/yfinance) 3. Sandbox run",
-        }
+        return _decision_with_agents(
+            [{"agent": "coding", "goal": m}],
+            "Heuristic: quantitative or visualization analysis (sandbox), not finance prose-only fetch.",
+            "1. Plan analysis 2. Python (numpy/pandas/matplotlib/yfinance) 3. Sandbox run",
+        )
 
     signals: list[tuple[str, bool]] = [
         ("python script", True),
@@ -183,18 +291,15 @@ def _heuristic_coding_task(message: str) -> Optional[dict]:
         if not ok:
             continue
         if phrase in low:
-            return {
-                "run_agent": True,
-                "agent": "coding",
-                "goal": m,
-                "reasoning": "Heuristic: task is code/computation (sandbox), not GUI desktop control.",
-                "next_steps": "1. Generate Python for the goal 2. Run in sandbox 3. Return output",
-            }
+            return _decision_with_agents(
+                [{"agent": "coding", "goal": m}],
+                "Heuristic: task is code/computation (sandbox), not GUI desktop control.",
+                "1. Generate Python for the goal 2. Run in sandbox 3. Return output",
+            )
     return None
 
 
 def _heuristic_shell_task(message: str) -> Optional[dict]:
-    """Strong signals for host shell; only when JARVIS_ENABLE_SHELL is on."""
     if not is_shell_enabled():
         return None
     m = (message or "").strip()
@@ -233,18 +338,15 @@ def _heuristic_shell_task(message: str) -> Optional[dict]:
     ]
     for h in hints:
         if h in low:
-            return {
-                "run_agent": True,
-                "agent": "shell",
-                "goal": m,
-                "reasoning": "Heuristic: host terminal / filesystem / package command.",
-                "next_steps": "1. Plan safe shell steps 2. Run commands in workdir 3. Summarize output",
-            }
+            return _decision_with_agents(
+                [{"agent": "shell", "goal": m}],
+                "Heuristic: host terminal / filesystem / package command.",
+                "1. Plan safe shell steps 2. Run commands in workdir 3. Summarize output",
+            )
     return None
 
 
 def _heuristic_finance_task(message: str) -> Optional[dict]:
-    """Route stock/market data questions to the finance agent (yfinance)."""
     m = (message or "").strip()
     if not m:
         return None
@@ -282,75 +384,59 @@ def _heuristic_finance_task(message: str) -> Optional[dict]:
         "price of ",
     ]
     if any(h in low for h in hints):
-        return {
-            "run_agent": True,
-            "agent": "finance",
-            "goal": m,
-            "reasoning": "Heuristic: market/stock data and analysis (yfinance).",
-            "next_steps": "1. Resolve tickers 2. Fetch yfinance 3. Analyze",
-        }
-    # Uppercase ticker + finance-ish words
+        return _decision_with_agents(
+            [{"agent": "finance", "goal": m}],
+            "Heuristic: market/stock data and analysis (yfinance).",
+            "1. Resolve tickers 2. Fetch yfinance 3. Analyze",
+        )
     if re.search(r"\b[A-Z]{2,5}\b", m) and any(
         w in low for w in ("stock", "stocks", "equity", "trading", "invest", "portfolio", "quote", "chart")
     ):
-        return {
-            "run_agent": True,
-            "agent": "finance",
-            "goal": m,
-            "reasoning": "Heuristic: ticker symbol + investment context.",
-            "next_steps": "1. Resolve tickers 2. Fetch yfinance 3. Analyze",
-        }
+        return _decision_with_agents(
+            [{"agent": "finance", "goal": m}],
+            "Heuristic: ticker symbol + investment context.",
+            "1. Resolve tickers 2. Fetch yfinance 3. Analyze",
+        )
     return None
+
+
+def _parse_agents_array(out: dict[str, Any], user_message: str) -> list[dict[str, str]]:
+    raw = out.get("agents")
+    if not isinstance(raw, list):
+        return []
+    seen: list[dict[str, str]] = []
+    for item in raw[:MAX_AGENTS_PER_PLAN]:
+        if not isinstance(item, dict):
+            continue
+        a = item.get("agent")
+        g = (item.get("goal") or "").strip() or user_message
+        ent = _sanitize_plan_entry(a, g, g)
+        if ent:
+            seen.append(ent)
+    return seen
 
 
 def supervisor_decision(api_key: str, provider: str, user_message: str) -> dict:
     """
-    Ask the supervisor LLM to decide: chat vs desktop vs coding vs shell vs finance agent.
-    Returns dict with: run_agent (bool), agent ("desktop"|"coding"|"shell"|"finance"|null), goal (str|null),
-    reasoning (str), next_steps (str).
+    Returns dict with:
+      run_agent, agents (list of {agent, goal}), agent/goal (first step, backward compat),
+      reasoning, next_steps.
     """
     user_message = (user_message or "").strip()
     if not user_message:
-        return {
-            "run_agent": False,
-            "agent": None,
-            "goal": None,
-            "reasoning": "",
-            "next_steps": "",
-        }
+        return _decision_with_agents([], "", "")
 
     hinted = _heuristic_coding_task(user_message)
     if hinted:
-        g = (hinted.get("goal") or user_message).strip()
-        return {
-            "run_agent": True,
-            "agent": "coding",
-            "goal": g,
-            "reasoning": str(hinted.get("reasoning") or ""),
-            "next_steps": str(hinted.get("next_steps") or ""),
-        }
+        return hinted
 
     hinted_shell = _heuristic_shell_task(user_message)
     if hinted_shell:
-        g = (hinted_shell.get("goal") or user_message).strip()
-        return {
-            "run_agent": True,
-            "agent": "shell",
-            "goal": g,
-            "reasoning": str(hinted_shell.get("reasoning") or ""),
-            "next_steps": str(hinted_shell.get("next_steps") or ""),
-        }
+        return hinted_shell
 
     hinted_finance = _heuristic_finance_task(user_message)
     if hinted_finance:
-        g = (hinted_finance.get("goal") or user_message).strip()
-        return {
-            "run_agent": True,
-            "agent": "finance",
-            "goal": g,
-            "reasoning": str(hinted_finance.get("reasoning") or ""),
-            "next_steps": str(hinted_finance.get("next_steps") or ""),
-        }
+        return hinted_finance
 
     mod = get_llm_client(provider)
     client = mod._client(api_key)
@@ -361,7 +447,7 @@ def supervisor_decision(api_key: str, provider: str, user_message: str) -> dict:
             {"role": "system", "content": _SUPERVISOR_SYSTEM},
             {"role": "user", "content": user_message},
         ],
-        **chat_completion_limit_kwargs(provider, model, 400),
+        **chat_completion_limit_kwargs(provider, model, 500),
     )
     raw = (resp.choices[0].message.content or "").strip()
     raw = re.sub(r"^```(?:json)?\s*", "", raw)
@@ -370,92 +456,31 @@ def supervisor_decision(api_key: str, provider: str, user_message: str) -> dict:
     try:
         out = json.loads(raw)
     except json.JSONDecodeError:
-        return {
-            "run_agent": False,
-            "agent": None,
-            "goal": None,
-            "reasoning": "Could not parse supervisor response.",
-            "next_steps": "",
-        }
-
-    run_agent = bool(out.get("run_agent"))
-    agent = out.get("agent")
-    if agent == "browser":
-        agent = None
-        run_agent = False
-    elif agent not in ("desktop", "coding", "shell", "finance"):
-        agent = None
-    if agent == "shell" and not is_shell_enabled():
-        agent = None
-        run_agent = False
-    if not run_agent:
-        agent = None
-    goal = (out.get("goal") or "").strip() or None
-    if not goal and agent:
-        goal = user_message
+        return _decision_with_agents([], "Could not parse supervisor response.", "")
 
     reasoning = (out.get("reasoning") or "").strip()
     next_steps = (out.get("next_steps") or "").strip()
 
-    # LLM sometimes picks desktop for pure coding tasks; never automate the GUI for these.
-    if agent == "desktop":
-        low = user_message.lower()
-        coding_override = any(
-            k in low
-            for k in (
-                "factorial",
-                "python script",
-                "execute python",
-                "run python",
-                "run a script",
-                "write a program",
-                "write python",
-                "coding task",
-                "in python",
-                "sandbox",
-            )
-        ) or (".py" in low and ("run" in low or "execute" in low))
-        if coding_override:
-            agent = "coding"
-            reasoning = (reasoning + " " if reasoning else "") + "(Rerouted to coding agent: programmatic task.)"
+    agents_out = _parse_agents_array(out, user_message)
 
-    # LLM sometimes picks desktop for mkdir / terminal-style tasks.
-    if agent == "desktop" and is_shell_enabled():
-        low = user_message.lower()
-        shell_reroute = any(
-            k in low
-            for k in (
-                "mkdir ",
-                "rmdir ",
-                "rm -",
-                "bash",
-                "powershell",
-                "pwsh",
-                "terminal",
-                "wsl ",
-                "diskpart",
-                "git clone",
-                "npm install",
-                "pnpm ",
-                "which drive",
-                "list drives",
-                "list disk",
-                "get-psdrive",
-                "shell command",
-            )
-        )
-        if shell_reroute:
-            agent = "shell"
-            reasoning = (reasoning + " " if reasoning else "") + "(Rerouted to shell agent: terminal/filesystem task.)"
+    if not agents_out:
+        run_agent = bool(out.get("run_agent"))
+        agent = out.get("agent")
+        if agent == "browser":
+            agent = None
+            run_agent = False
+        goal = (out.get("goal") or "").strip() or None
+        if run_agent and agent:
+            if not goal:
+                goal = user_message
+            ent = _sanitize_plan_entry(agent, goal, user_message)
+            if ent:
+                agents_out.append(ent)
 
-    if agent == "finance" and _finance_quant_coding_signals(user_message.lower()):
-        agent = "coding"
-        reasoning = (reasoning + " " if reasoning else "") + "(Rerouted to coding agent: scripted/plotted analysis.)"
+    if not agents_out:
+        if not bool(out.get("run_agent")):
+            return _decision_with_agents([], reasoning, next_steps)
+        extra = " (Planned agents were invalid or empty.)" if reasoning else "No valid agent plan."
+        return _decision_with_agents([], (reasoning + extra).strip(), next_steps)
 
-    return {
-        "run_agent": run_agent and agent is not None and bool(goal),
-        "agent": agent,
-        "goal": goal,
-        "reasoning": reasoning.strip(),
-        "next_steps": next_steps,
-    }
+    return _decision_with_agents(agents_out, reasoning, next_steps)

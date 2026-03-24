@@ -560,22 +560,31 @@ async def send_message_stream(body: SendMessageRequest):
 
         yield _sse_data({"type": "status", "phase": "supervisor", "message": "Running supervisor…"})
         decision = await asyncio.to_thread(supervisor_decision, api_key, provider, message)
+        agents_plan = decision.get("agents") or []
         goal = (decision.get("goal") or message).strip()
-        is_task = decision.get("run_agent") and bool(goal)
-        agent = (decision.get("agent") or "") or None
+        is_task = bool(decision.get("run_agent")) and len(agents_plan) > 0
         route_labels = {
             "desktop": "desktop agent",
             "coding": "coding agent (sandbox)",
             "shell": "shell agent (host)",
             "finance": "finance agent (yfinance)",
         }
-        if is_task and agent:
+        if is_task:
+            if len(agents_plan) == 1:
+                ag = agents_plan[0].get("agent")
+                sup_msg = f"Supervisor → running {route_labels.get(ag, ag)}"
+            else:
+                chain = " → ".join(route_labels.get(x.get("agent"), x.get("agent")) for x in agents_plan)
+                sup_msg = f"Supervisor → plan: {chain}"
             yield _sse_data(
                 {
                     "type": "status",
                     "phase": "supervisor_done",
-                    "message": f"Supervisor → running {route_labels.get(agent, agent)}",
-                    "agent": agent,
+                    "message": sup_msg,
+                    "agent": agents_plan[0].get("agent") if agents_plan else None,
+                    "agents": [
+                        {"agent": x.get("agent"), "goal": (x.get("goal") or "")[:500]} for x in agents_plan
+                    ],
                     "goal": goal[:500],
                     "reasoning": (decision.get("reasoning") or "")[:400],
                     "next_steps": (decision.get("next_steps") or "")[:800],
@@ -588,6 +597,7 @@ async def send_message_stream(body: SendMessageRequest):
                     "phase": "supervisor_done",
                     "message": "Supervisor → chat (no agent run)",
                     "agent": None,
+                    "agents": [],
                 }
             )
 
@@ -610,12 +620,18 @@ async def send_message_stream(body: SendMessageRequest):
             return
 
         # Agent path: stream each step over SSE as it happens (WebSocket still gets full payload + screenshots)
+        ag0 = agents_plan[0].get("agent") if agents_plan else None
+        if len(agents_plan) <= 1:
+            start_msg = f"Starting {route_labels.get(ag0, ag0)} — plan & steps will stream here"
+        else:
+            start_msg = f"Starting multi-agent plan ({len(agents_plan)} specialists) — steps stream below"
         yield _sse_data(
             {
                 "type": "status",
                 "phase": "agent_start",
-                "message": f"Starting {route_labels.get(agent, agent)} — plan & steps will stream here",
-                "agent": agent,
+                "message": start_msg,
+                "agent": ag0,
+                "agents": [x.get("agent") for x in agents_plan],
             }
         )
         step_queue: queue.Queue = queue.Queue()
